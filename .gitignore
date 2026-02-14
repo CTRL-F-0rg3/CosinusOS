@@ -1,0 +1,14 @@
+# Build
+build/
+*.o
+*.bin
+*.iso
+
+# Limine binarki
+limine/limine.sys
+limine/limine-cd.bin
+limine/limine-efi-*.efi
+
+# VSCode / IDE
+.vscode/
+*.swp
