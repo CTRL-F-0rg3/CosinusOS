@@ -1,0 +1,24 @@
+# CosinusOS - Git attributes
+# Wyklucza pliki buildów ze statystyk języków
+
+# Build directories
+build/* linguist-vendored
+target/* linguist-vendored
+*.img linguist-generated
+*.bin linguist-generated
+*.o linguist-generated
+*.elf linguist-generated
+*.a linguist-generated
+
+# Documentation
+*.md linguist-documentation
+
+# Config files  
+*.toml linguist-language=TOML
+Makefile linguist-language=Makefile
+
+# Detect languages properly
+*.rs linguist-language=Rust
+*.c linguist-language=C
+*.h linguist-language=C
+*.asm linguist-language=Assembly

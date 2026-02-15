@@ -1,16 +1,58 @@
-# Build
-build/
-*.o
-*.bin
-*.iso
+# CosinusOS - Git ignore
 
-# Limine binarki
-limine/limine.sys
-limine/limine-cd.bin
-limine/limine-efi-*.efi
-/home/ctrl/Dokumenty/CosinusOS_/src/userspace/target
-/home/ctrl/Dokumenty/CosinusOS_/build
-iso/
-# VSCode / IDE
+# ============================================
+# BUILD ARTIFACTS
+# ============================================
+build/
+*.img
+*.bin
+*.o
+*.elf
+*.a
+*.so
+
+# ============================================
+# RUST
+# ============================================
+target/
+Cargo.lock
+**/*.rs.bk
+
+# ============================================
+# C/C++
+# ============================================
+*.out
+*.exe
+*.obj
+*.lib
+*.dll
+
+# ============================================
+# EDITOR/IDE
+# ============================================
 .vscode/
+.idea/
 *.swp
+*.swo
+*~
+.DS_Store
+
+# ============================================
+# TEMP FILES
+# ============================================
+*.log
+*.tmp
+*_old
+*_backup
+
+# ============================================
+# OS SPECIFIC
+# ============================================
+Thumbs.db
+.DS_Store
+desktop.ini
+
+# ============================================
+# RUST TARGET SPEC (generated)
+# ============================================
+x86_64-unknown-none.json
