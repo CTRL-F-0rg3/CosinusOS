@@ -8,7 +8,7 @@ build/
 limine/limine.sys
 limine/limine-cd.bin
 limine/limine-efi-*.efi
-
+/home/ctrl/Dokumenty/CosinusOS_/src/userspace/target
 # VSCode / IDE
 .vscode/
 *.swp
