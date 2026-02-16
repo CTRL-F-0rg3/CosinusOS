@@ -87,7 +87,6 @@ pub fn exit(code: i32) -> ! {
     unsafe {
         syscall1(Syscall::Exit, code as usize);
     }
-    // Jeśli syscall nie zadziała - infinite loop
     loop {
         unsafe {
             core::arch::asm!("hlt");
@@ -656,7 +655,7 @@ impl DriverManager {
 // ENTRY POINT
 // ============================================================================
 
-#[unsafe(no_mangle)]
+#[no_mangle]  // <-- POPRAWIONO: usunięto "unsafe"
 pub extern "C" fn _start() -> ! {
     main();
     exit(0);
@@ -715,7 +714,6 @@ fn main() {
     println("");
     println("System is idle. Press Ctrl+Alt+Del to reboot.");
     
-    // KRYTYCZNE: Infinite loop - system czeka na przerwania
     loop {
         unsafe {
             core::arch::asm!("hlt");
