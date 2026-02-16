@@ -1,1 +1,1 @@
-![cosinusoslogo.jpg]
+![(cosinusoslogo.jpg)]
