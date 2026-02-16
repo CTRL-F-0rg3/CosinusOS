@@ -53,3 +53,4 @@ const Lexer = struct {
         return Token{ .kind = .identifier, .lexeme = "?" };
     }
 };
+//TODO ulepsz tokenizer pod odpowiednią składnie
