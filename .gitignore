@@ -51,6 +51,12 @@ Cargo.lock
 Thumbs.db
 .DS_Store
 desktop.ini
+# ============================================
+# PROJECT SPECIFIC
+# ============================================
+Trash/
+iso/
+*.iso
 
 # ============================================
 # RUST TARGET SPEC (generated)
