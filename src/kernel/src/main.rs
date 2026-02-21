@@ -1,15 +1,5 @@
-// src/kernel/src/main.rs — CosinusOS Microkernel v3.1
-//
-// Zmiany względem v3.0:
-//  [FIX] User CR3: kopiowanie górnych 256 wpisów P4 z kernelowego P4
-//  [FIX] mm_map_page/mm_unmap_page przyjmują p4_phys jako argument
-//  [FIX] Pełny TrapFrame we WSZYSTKICH ISR (timer, page fault, syscall) przez makra
-//  [FIX] IST=1 dla double fault (dedykowany stos, nie korzysta z bieżącego RSP)
-//  [FIX] Guard page dla każdego stosu kernelowego i użytkownika
-//  [FIX] Walidacja user-pointerów: present + user bit przez całe drzewo P4→P1
-//  [FIX] mm_alloc_frame: hint pointer → O(1) amortyzowane zamiast liniowego skanowania
-//  [FIX] mm_unmap_page: lazy freeing pustych P1/P2/P3 (brak memory leak)
-//  [FIX] thread_switch: callee-saved + RIP przez ret (spójna konwencja)
+// src/kernel/src/main.rs — CosinusOS Microkernel 
+
 #![no_std]
 #![no_main]
 #![feature(asm_const, naked_functions, abi_x86_interrupt)]
@@ -445,11 +435,8 @@ pub unsafe fn mm_swap_in(p4_phys: PhysAddr, virt: VirtAddr, flags: u64) -> Optio
 // ============================================================================
 // TRAPFRAME — wspólna struktura dla WSZYSTKICH ISR
 // ============================================================================
-/// Dokładny układ stosu po wejściu do ISR.
-/// CPU odkłada (ring3→ring0): [SS, RSP, RFLAGS, CS, RIP].
-/// Dla wyjątków z error code CPU wkłada error_code PRZED RIP.
-/// Nasz handler w obu przypadkach odkłada rejestry tak, by pasowały do tej struktury.
-#[repr(C)]
+
+#[repr(C, align(16))]
 pub struct TrapFrame {
     // Odkładane przez handler (od szczytu stosu w dół):
     pub r15: u64, pub r14: u64, pub r13: u64, pub r12: u64,
@@ -880,8 +867,6 @@ unsafe fn thread_create_impl(name: &str, entry: VirtAddr, arg: u64, user: bool) 
     -1
 }
 
-/// Trampoline dla wątków kernelowych.
-/// Po thread_switch: r15=arg, r14=entry.
 #[naked]
 unsafe extern "C" fn trampoline_kernel() -> ! {
     asm!(
@@ -892,9 +877,7 @@ unsafe extern "C" fn trampoline_kernel() -> ! {
     );
 }
 
-/// Trampoline dla wątków użytkownika.
-/// Po thread_switch: r15=arg, r14=entry (user RIP), r13=user RSP.
-/// Buduje iretq frame i skacze do ring3.
+
 #[naked]
 unsafe extern "C" fn trampoline_user() -> ! {
     asm!(
