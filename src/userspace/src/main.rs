@@ -10,6 +10,14 @@ use core::sync::atomic::{AtomicUsize, AtomicBool, Ordering};
 use alloc::vec::Vec;
 use alloc::string::String;
 use alloc::boxed::Box;
+mod files;
+use files::*;
+
+// w main():
+file_system(); // inicjalizuje VFS, montuje RamFs pod !d1
+
+file_write_all("!d1;/home/ctrl/desktop/koty/notatka.txt", b"miau").unwrap();
+let data = file_read_all("!d1;/home/ctrl/desktop/koty/notatka.txt").unwrap();
 
 // ============================================================================
 // SYSCALL INTERFACE
