@@ -1057,4 +1057,4 @@ pub fn run_demo() {
 pub fn terminal_main() {
     crate::files::file_system();
     run_demo(); // zamień na run_terminal(keyboard_input) gdy będzie sterownik klawiatury
-}
+} // eh
