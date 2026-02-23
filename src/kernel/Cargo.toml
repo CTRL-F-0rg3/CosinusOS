@@ -1,11 +1,14 @@
-# src/kernel/Cargo.toml
 [package]
 name = "kernel"
 version = "0.1.0"
-edition = "2021"  # ← Tymczasowo 2021, by uniknąć problemów z unsafe
+edition = "2021"
+
+[lib]
+name = "kernel"
+path = "src/lib.rs"
+crate-type = ["staticlib"]
 
 [dependencies]
-
 
 [profile.dev]
 panic = "abort"
