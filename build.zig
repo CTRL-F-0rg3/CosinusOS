@@ -108,23 +108,32 @@ pub fn build(b: *std.Build) void {
 
     // ========================================================
     // KROK 6 — Przygotuj strukturę ISO
-    //          Skopiuj kernel.elf do iso/boot/
     // ========================================================
+
+    // Skopiuj kernel.elf do iso/boot/
     const copy_kernel_to_iso = b.addSystemCommand(&.{
         "cp", kernel_elf, iso_dir ++ "/kernel.elf",
     });
     copy_kernel_to_iso.step.dependOn(&link_kernel.step);
 
-    // Skopiuj userspace obok kernela (kernel go wczyta)
+    // Skopiuj userspace.bin do iso/boot/
     const copy_userspace_to_iso = b.addSystemCommand(&.{
         "cp", userspace_bin, iso_dir ++ "/userspace.bin",
     });
     copy_userspace_to_iso.step.dependOn(&copy_userspace.step);
 
-    // Stwórz grub.cfg jeśli nie istnieje
+    // ========================================================
+    // KROK 7 — Stwórz grub.cfg (ZAWSZE nadpisuj, sprawdź pliki)
+    // ========================================================
+    // FIX: Zawsze nadpisuj grub.cfg + sprawdź czy pliki istnieją
     const write_grub_cfg = b.addSystemCommand(&.{
         "sh", "-c",
-        "[ -f " ++ grub_dir ++ "/grub.cfg ] || cat > " ++ grub_dir ++ "/grub.cfg << 'EOF'\n" ++
+        // Sprawdź czy pliki istnieją przed pisaniem configu
+        "echo '[GRUB] Sprawdzanie plikow...' && " ++
+            "ls -la " ++ iso_dir ++ "/kernel.elf && " ++
+            "ls -la " ++ iso_dir ++ "/userspace.bin && " ++
+            "echo '[GRUB] Tworzenie grub.cfg...' && " ++
+            "cat > " ++ grub_dir ++ "/grub.cfg << 'EOF'\n" ++
             "set timeout=0\n" ++
             "set default=0\n" ++
             "menuentry \"Cosinus OS\" {\n" ++
@@ -132,12 +141,16 @@ pub fn build(b: *std.Build) void {
             "    module2    /boot/userspace.bin userspace\n" ++
             "    boot\n" ++
             "}\n" ++
-            "EOF",
+            "EOF\n" ++
+            "echo '[GRUB] Config utworzony:' && " ++
+            "cat " ++ grub_dir ++ "/grub.cfg",
     });
-    write_grub_cfg.step.dependOn(&mk_dirs.step);
+    // FIX: Zależy od OBU kopii żeby pliki na pewno były
+    write_grub_cfg.step.dependOn(&copy_kernel_to_iso.step);
+    write_grub_cfg.step.dependOn(&copy_userspace_to_iso.step);
 
     // ========================================================
-    // KROK 7 — Zbuduj ISO (grub-mkrescue)
+    // KROK 8 — Zbuduj ISO (grub-mkrescue)
     // ========================================================
     const make_iso = b.addSystemCommand(&.{
         "grub-mkrescue",
@@ -145,24 +158,48 @@ pub fn build(b: *std.Build) void {
         iso_out,
         "iso",
     });
-    make_iso.step.dependOn(&copy_kernel_to_iso.step);
-    make_iso.step.dependOn(&copy_userspace_to_iso.step);
     make_iso.step.dependOn(&write_grub_cfg.step);
 
     // ========================================================
-    // KROK 8 — Zbuduj raw disk image (64 MB)
-    //          Format: ISO na początku dysku (hybrydowy obraz)
+    // KROK 9 — DIAGNOSTYKA: Sprawdź zawartość ISO
+    // ========================================================
+    const check_iso = b.addSystemCommand(&.{
+        "sh", "-c",
+        "echo '' && " ++
+            "echo '========================================' && " ++
+            "echo '=== DIAGNOSTYKA ZAWARTOSCI ISO ========' && " ++
+            "echo '========================================' && " ++
+            "echo '' && " ++
+            "echo '--- Pliki w ISO (isoinfo) ---' && " ++
+            "(isoinfo -i " ++ iso_out ++ " -l 2>/dev/null || echo 'BLAD: isoinfo nie dziala') && " ++
+            "echo '' && " ++
+            "echo '--- Szukam kernel/userspace ---' && " ++
+            "isoinfo -i " ++ iso_out ++ " -l | grep -E '(kernel|userspace|grub)' || " ++
+            "echo 'OSTRZEZENIE: Nie znaleziono plikow kernel/userspace!' && " ++
+            "echo '' && " ++
+            "echo '--- Hexdump naglowka ISO (pierwsze 32 bajty) ---' && " ++
+            "xxd -l 32 " ++ iso_out ++ " && " ++
+            "echo '' && " ++
+            "echo '--- Rozmiar plikow w iso/boot/ ---' && " ++
+            "ls -la iso/boot/ 2>/dev/null || echo 'BLAD: Brak katalogu iso/boot/' && " ++
+            "echo '' && " ++
+            "echo '========================================'",
+    });
+    check_iso.step.dependOn(&make_iso.step);
+
+    // ========================================================
+    // KROK 10 — Zbuduj raw disk image (64 MB)
     // ========================================================
     const make_img = b.addSystemCommand(&.{
         "sh", "-c",
-        // Utwórz pusty obraz 64MB, wgraj ISO jako hybrydowy MBR
         "dd if=/dev/zero of=" ++ img_out ++ " bs=1M count=64 2>/dev/null && " ++
-            "dd if=" ++ iso_out ++ " of=" ++ img_out ++ " conv=notrunc 2>/dev/null",
+            "dd if=" ++ iso_out ++ " of=" ++ img_out ++ " conv=notrunc 2>/dev/null && " ++
+            "echo '[IMG] Obraz dysku utworzony: " ++ img_out ++ "'",
     });
-    make_img.step.dependOn(&make_iso.step);
+    make_img.step.dependOn(&check_iso.step);
 
     // ========================================================
-    // KROK 9 — Uruchom QEMU
+    // KROK 11 — Uruchom QEMU
     // ========================================================
     var qemu_args = std.ArrayListUnmanaged([]const u8){};
     defer qemu_args.deinit(b.allocator);
@@ -206,7 +243,7 @@ pub fn build(b: *std.Build) void {
 
     // zig build iso      → tylko ISO bez QEMU
     const iso_step = b.step("iso", "Tylko zbuduj ISO bez uruchamiania QEMU");
-    iso_step.dependOn(&make_iso.step);
+    iso_step.dependOn(&check_iso.step);
 
     // zig build img      → ISO + raw disk image
     const img_step = b.step("img", "Zbuduj ISO + raw disk image");
@@ -220,12 +257,16 @@ pub fn build(b: *std.Build) void {
     const us_step = b.step("userspace", "Tylko skompiluj userspace");
     us_step.dependOn(&copy_userspace.step);
 
+    // zig build check    → sprawdź ISO bez buildowania
+    const check_step = b.step("check", "Sprawdź zawartość istniejącego ISO");
+    check_step.dependOn(&check_iso.step);
+
     // zig build run      → uruchom QEMU (zakłada że ISO już istnieje)
     const run_step = b.step("run", "Uruchom QEMU");
     run_step.dependOn(&run_qemu.step);
 
     // zig build clean    → usuń katalog build/
-    const clean = b.addSystemCommand(&.{ "rm", "-rf", build_dir });
-    const clean_step = b.step("clean", "Usuń katalog build/");
+    const clean = b.addSystemCommand(&.{ "rm", "-rf", build_dir, "iso" });
+    const clean_step = b.step("clean", "Usuń katalog build/ i iso/");
     clean_step.dependOn(&clean.step);
 }
