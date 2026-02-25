@@ -839,42 +839,122 @@ pub unsafe fn mb2_find_module(info_ptr: u64) -> Option<(u64, u64)> {
 const US_VIRT_BASE: u64 = 0x0080_0000; // 8MB — adres wirtualny userspace
 
 pub unsafe fn load_userspace(mod_start: u64, mod_end: u64) {
-    let size = (mod_end - mod_start) as usize;
-    if size == 0 {
-        print("[US] Modul pusty!\n");
+    const PAGE_SIZE_U64: u64 = PAGE_SIZE as u64;
+    
+    if mod_end <= mod_start {
+        print("[US] Niepoprawny zakres modułu!\n");
         return;
     }
 
-    let mut b=[0u8;20];
-    print("[US] Modul: 0x"); print(u64_hex(mod_start, &mut [0u8;18]));
-    print(" - 0x"); print(u64_hex(mod_end, &mut [0u8;18]));
-    print(" ("); print(usize_str(size, &mut b)); print(" B)\n");
+    let mut b = [0u8; 20];
+    
+    // === DIAGNOZA: Co mamy w userspace.bin? ===
+    print("[US] Modul: 0x"); print(u64_hex(mod_start, &mut b));
+    print(" - 0x"); print(u64_hex(mod_end, &mut b));
+    print(" ("); print(usize_str((mod_end - mod_start) as usize, &mut b)); print(" B)\n");
 
-    // Mapuj strony modułu pod US_VIRT_BASE
-    let pages = (size + PAGE_SIZE - 1) / PAGE_SIZE;
+    // Sprawdź pierwsze bajty
+    let first_word = *(mod_start as *const u32);
+    print("[US] Pierwsze 4 bajty: 0x"); print(u64_hex(first_word as u64, &mut b)); print("\n");
+
+    // === Zaokrąglij adresy do stron ===
+    let phys_aligned = mod_start & !(PAGE_SIZE_U64 - 1);
+    let offset_in_page = mod_start - phys_aligned;
+    let size_raw = (mod_end - mod_start) as usize;
+    let size_aligned = ((offset_in_page + size_raw as u64 + PAGE_SIZE_U64 - 1) / PAGE_SIZE_U64) * PAGE_SIZE_U64;
+
+    // === Mapuj pod US_VIRT_BASE ===
+    let pages = (size_aligned / PAGE_SIZE_U64) as usize;
+    print("[US] Mapowanie "); print(usize_str(pages, &mut b)); print(" stron...\n");
+    
     for p in 0..pages {
-        let phys = mod_start + p as u64 * PAGE_SIZE as u64;
-        let virt = US_VIRT_BASE + p as u64 * PAGE_SIZE as u64;
-        // Mapuj w kernel P4 (wątek kernela ma dostęp do tych adresów)
-        mm_map(KERNEL_P4, virt, phys, PTE_W);
+        let phys = phys_aligned + (p as u64) * PAGE_SIZE_U64;
+        let virt = US_VIRT_BASE + (p as u64) * PAGE_SIZE_U64;
+        if mm_map(KERNEL_P4, virt, phys, PTE_W) != 0 {
+            print("[US] Błąd mapowania strony "); print(usize_str(p, &mut b)); print("\n");
+            return;
+        }
     }
-
     print("[US] Zmapowano "); print(usize_str(pages, &mut b)); print(" stron\n");
 
-    // Sprawdź czy to ELF
+    // === Sprawdź czy to ELF ===
     let magic = *(US_VIRT_BASE as *const u32);
-    if magic == 0x464C457F {
-        // To jest ELF — znajdź entry point z nagłówka
+    
+    let entry_point = if magic == 0x464C457F {
+        // ELF
+        print("[US] Wykryto ELF\n");
+        
+        // Sprawdź e_type (offset 16)
+        let e_type = *((US_VIRT_BASE + 16) as *const u16);
         let e_entry = *((US_VIRT_BASE + 24) as *const u64);
-        print("[US] ELF entry=0x"); print(u64_hex(e_entry, &mut [0u8;18])); print("\n");
-        let tid = tcreate_k("userspace\0", e_entry, 0);
-        if tid < 0 { print("[US] Nie udalo sie stworzyc watku!\n"); }
+        
+        print("[US] e_type=0x"); print(u64_hex(e_type as u64, &mut b)); print("\n");
+        print("[US] e_entry=0x"); print(u64_hex(e_entry, &mut b)); print("\n");
+        
+        // e_type: 1=REL, 2=EXEC, 3=DYN
+        if e_type == 2 {
+            // ET_EXEC - ma hardcoded adresy, użyj entry bez zmian
+            print("[US] ELF jest ET_EXEC - uzywam entry z naglowka\n");
+            e_entry
+        } else {
+            // ET_REL lub ET_DYN - przelicz względem US_VIRT_BASE
+            print("[US] ELF jest pozycjonowalny - przeliczam entry\n");
+            US_VIRT_BASE + offset_in_page
+        }
     } else {
-        // Raw binary — uruchom od początku
-        print("[US] Raw binary, entry=0x"); print(u64_hex(US_VIRT_BASE, &mut [0u8;18])); print("\n");
-        let tid = tcreate_k("userspace\0", US_VIRT_BASE, 0);
-        if tid < 0 { print("[US] Nie udalo sie stworzyc watku!\n"); }
+        // Raw binary
+        print("[US] Raw binary - entry=0x"); print(u64_hex(US_VIRT_BASE + offset_in_page, &mut b)); print("\n");
+        US_VIRT_BASE + offset_in_page
+    };
+
+    // === Stwórz wątek userspace ===
+    // Używamy trybu kernela (bezpieczniej na początek)
+    for i in 1..MAX_THREADS {
+        if THREADS[i].state == TS::Terminated {
+            let t = &mut THREADS[i];
+            
+            // Przygotuj stos jądrowy
+            let kb = 0x0200_0000u64 + (i as u64) * (KERNEL_STACK_SIZE as u64 + PAGE_SIZE as u64);
+            let ks = kb + PAGE_SIZE as u64;
+            for p in 0..(KERNEL_STACK_SIZE/PAGE_SIZE) {
+                mm_map(KERNEL_P4, ks + (p as u64)*PAGE_SIZE as u64, mm_alloc_frame(), PTE_W);
+            }
+            let kt = ks + KERNEL_STACK_SIZE as u64;
+
+            t.id = i as u32;
+            t.state = TS::Ready;
+            t.prio = 10;
+            t.ktop = kt;
+            t.utop = 0;
+            t.cr3 = KERNEL_P4;
+            t.name = [0; 16];
+            
+            // Przygotuj stos z trampoline
+            let mut ksp = kt;
+            macro_rules! push { ($v:expr) => { ksp -= 8; *(ksp as *mut u64) = $v as u64; } }
+            
+            push!(trampoline_kernel as *const () as u64);
+            push!(0u64);  // r15 = arg
+            push!(entry_point); // r14 = entry point
+            push!(0u64);  // r13
+            push!(0u64);  // utop
+            push!(entry_point);
+            push!(0u64);  // arg
+            
+            t.krsp = ksp;
+            
+            let name = b"userspace";
+            for j in 0..name.len().min(15) { t.name[j] = name[j]; }
+            
+            THREAD_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+            
+            print("[T] #"); print(usize_str(i, &mut b)); print(" userspace (entry=0x"); 
+            print(u64_hex(entry_point, &mut b)); print(")\n");
+            return;
+        }
     }
+    
+    print("[US] Brak wolnych slotów na wątki!\n");
 }
 
 // ============================================================================

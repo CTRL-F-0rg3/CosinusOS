@@ -1,215 +1,151 @@
 const std = @import("std");
 
-// ============================================================
-//  CosineOS — build.zig
-//  Architektura : x86_64
-//  Kernel       : src/kernel  (Rust, no_std, x86_64-unknown-none)
-//  Userspace    : src/userspace (Rust, no_std)
-//  Bootloader   : boot.asm + GRUB (multiboot2)
-//  Wyjście      : build/cosinusos.iso  +  build/cosinusos.img
-// ============================================================
-
 pub fn build(b: *std.Build) void {
-    // --------------------------------------------------------
-    // Opcje
-    // --------------------------------------------------------
-    const debug = b.option(bool, "debug", "Włącz debug (QEMU bez -daemonize)") orelse true;
-    const qemu_wait_gdb = b.option(bool, "gdb", "Czekaj na GDB na porcie 1234") orelse false;
+    // ============================================================
+    // OPCJE BUILD
+    // ============================================================
+    const debug = b.option(bool, "debug", "Włącz debug logging w QEMU") orelse false;
+    const qemu_wait_gdb = b.option(bool, "gdb", "Czekaj na GDB (port 1234)") orelse false;
+    const skip_qemu = b.option(bool, "no-run", "Nie uruchamiaj QEMU po buildzie") orelse false;
 
-    // --------------------------------------------------------
-    // Ścieżki
-    // --------------------------------------------------------
+    // ============================================================
+    // ŚCIEŻKI
+    // ============================================================
     const build_dir = "build";
-    const iso_dir = "iso/boot";
-    const grub_dir = "iso/boot/grub";
-    const kernel_elf = build_dir ++ "/kernel.elf";
-    const boot_obj = build_dir ++ "/boot.o";
-    const userspace_bin = build_dir ++ "/userspace_raw.bin";
-    const iso_out = build_dir ++ "/cosinusos.iso";
-    const img_out = build_dir ++ "/cosinusos.img";
+    const iso_root = "iso";
 
-    // ========================================================
-    // KROK 1 — Stwórz katalogi wyjściowe
-    // ========================================================
-    const mk_dirs = b.addSystemCommand(&.{
-        "mkdir",   "-p",
-        build_dir, iso_dir,
-        grub_dir,
-    });
-
-    // ========================================================
-    // KROK 2 — Kompiluj boot.asm → boot.o
-    // ========================================================
-    const asm_boot = b.addSystemCommand(&.{
-        "nasm",
-        "-f",
-        "elf64",
-        "boot.asm",
-        "-o",
-        boot_obj,
-    });
-    asm_boot.step.dependOn(&mk_dirs.step);
-
-    // ========================================================
-    // KROK 3 — Upewnij się że kernel Cargo.toml ma crate-type = staticlib,
-    //           potem kompiluj kernel (Rust) → libkernel.a
-    // ========================================================
-    // Patch Cargo.toml kernela - dodaj [lib] staticlib jeśli nie ma
-    const patch_cargo = b.addSystemCommand(&.{
-        "sh", "-c",
-        "grep -q 'staticlib' src/kernel/Cargo.toml || " ++
-            "printf '\\n[lib]\\nname = \"kernel\"\\npath = \"src/main.rs\"\\ncrate-type = [\"staticlib\"]\\n' >> src/kernel/Cargo.toml",
-    });
-    patch_cargo.step.dependOn(&mk_dirs.step);
+    // ============================================================
+    // KERNEL (Rust)
+    // ============================================================
+    const kernel_step = b.step("kernel", "Build kernel only");
 
     const cargo_kernel = b.addSystemCommand(&.{
-        "cargo",                "+nightly",            "build",
-        "--release",            "--manifest-path",     "src/kernel/Cargo.toml",
-        "--target",             "x86_64-unknown-none", "-Z",
-        "build-std=core,alloc", "-Z",                  "build-std-features=compiler-builtins-mem",
+        "cargo",           "+nightly",                    "build",    "--release",
+        "--manifest-path", "src/kernel/Cargo.toml",       "--target", "x86_64-unknown-none",
+        "-Z",              "build-std=core,alloc",        "-Z",       "build-std-features=compiler-builtins-mem",
+        "--target-dir",    build_dir ++ "/kernel_target",
     });
-    cargo_kernel.step.dependOn(&patch_cargo.step);
 
-    // ========================================================
-    // KROK 4 — Linkuj kernel.elf
-    //          boot.o + libkernel.a → kernel.elf  (przez linker.ld)
-    // ========================================================
-    const link_kernel = b.addSystemCommand(&.{
+    const check_cargo = b.addSystemCommand(&.{
+        "sh", "-c",
+        "grep -q '\\[lib\\]' src/kernel/Cargo.toml && " ++
+            "grep -q 'crate-type.*staticlib' src/kernel/Cargo.toml || " ++
+            "(echo '[ERROR] kernel/Cargo.toml musi mieć [lib] z crate-type = [\"staticlib\"]' && exit 1)",
+    });
+
+    kernel_step.dependOn(&check_cargo.step);
+    kernel_step.dependOn(&cargo_kernel.step);
+
+    // ============================================================
+    // BOOTLOADER (NASM)
+    // ============================================================
+    const boot_step = b.step("boot", "Build bootloader only");
+
+    const nasm_boot = b.addSystemCommand(&.{
+        "nasm",     "-f", "elf64",                "-g", "-F", "dwarf",
+        "boot.asm", "-o", build_dir ++ "/boot.o",
+    });
+    boot_step.dependOn(&nasm_boot.step);
+
+    // ============================================================
+    // LINK KERNEL
+    // ============================================================
+    const link_step = b.step("link", "Link kernel.elf");
+
+    const linker_cmd = b.addSystemCommand(&.{
         "ld",
-        "-n",
         "-T",
         "linker.ld",
         "-o",
-        kernel_elf,
-        boot_obj,
-        "src/kernel/target/x86_64-unknown-none/release/libkernel.a",
+        build_dir ++ "/kernel.elf",
+        "--nmagic",
+        build_dir ++ "/boot.o",
+        build_dir ++ "/kernel_target/x86_64-unknown-none/release/libkernel.a",
     });
-    link_kernel.step.dependOn(&asm_boot.step);
-    link_kernel.step.dependOn(&cargo_kernel.step);
 
-    // ========================================================
-    // KROK 5 — Kompiluj userspace (Rust) → userspace_raw.bin
-    // ========================================================
-    const cargo_userspace = b.addSystemCommand(&.{
-        "cargo",                "+nightly",            "build",
-        "--release",            "--manifest-path",     "src/userspace/Cargo.toml",
-        "--target",             "x86_64-unknown-none", "-Z",
-        "build-std=core,alloc", "-Z",                  "build-std-features=compiler-builtins-mem",
+    linker_cmd.step.dependOn(kernel_step);
+    linker_cmd.step.dependOn(boot_step);
+    link_step.dependOn(&linker_cmd.step);
+
+    // ============================================================
+    // USERSPACE (Rust)
+    // ============================================================
+    const userspace_step = b.step("userspace", "Build userspace only");
+
+    const cargo_us = b.addSystemCommand(&.{
+        "cargo",           "+nightly",                 "build",        "--release",
+        "--manifest-path", "src/userspace/Cargo.toml", "--target",     "x86_64-unknown-none",
+        "-Z",              "build-std=core,alloc",     "--target-dir", build_dir ++ "/userspace_target",
     });
-    cargo_userspace.step.dependOn(&mk_dirs.step);
 
-    // Skopiuj binarny output userspace do build/
-    const copy_userspace = b.addSystemCommand(&.{
+    const copy_us_bin = b.addSystemCommand(&.{
         "cp",
-        "src/userspace/target/x86_64-unknown-none/release/userspace",
-        userspace_bin,
+        build_dir ++ "/userspace_target/x86_64-unknown-none/release/userspace",
+        build_dir ++ "/userspace.bin",
     });
-    copy_userspace.step.dependOn(&cargo_userspace.step);
 
-    // ========================================================
-    // KROK 6 — Przygotuj strukturę ISO
-    // ========================================================
+    userspace_step.dependOn(&cargo_us.step);
+    userspace_step.dependOn(&copy_us_bin.step);
 
-    // Skopiuj kernel.elf do iso/boot/
-    const copy_kernel_to_iso = b.addSystemCommand(&.{
-        "cp", kernel_elf, iso_dir ++ "/kernel.elf",
-    });
-    copy_kernel_to_iso.step.dependOn(&link_kernel.step);
+    // ============================================================
+    // PRZYGOTOWANIE ISO + grub.cfg
+    // ============================================================
+    const prepare_iso = b.addSystemCommand(&.{ "sh", "-c", "mkdir -p iso/boot/grub && " ++
+        "cp " ++ build_dir ++ "/kernel.elf   iso/boot/ && " ++
+        "cp " ++ build_dir ++ "/userspace.bin iso/boot/ && " ++
+        "cat > iso/boot/grub/grub.cfg << 'EOF'\n" ++
+        "set timeout=3\n" ++
+        "set default=0\n" ++
+        "menuentry 'CosinusOS' {\n" ++
+        "    multiboot2 /boot/kernel.elf debug=1 earlycon=serial\n" ++
+        "    module2   /boot/userspace.bin\n" ++
+        "}\n" ++
+        "EOF" });
 
-    // Skopiuj userspace.bin do iso/boot/
-    const copy_userspace_to_iso = b.addSystemCommand(&.{
-        "cp", userspace_bin, iso_dir ++ "/userspace.bin",
-    });
-    copy_userspace_to_iso.step.dependOn(&copy_userspace.step);
+    prepare_iso.step.dependOn(link_step);
+    prepare_iso.step.dependOn(userspace_step);
 
-    // ========================================================
-    // KROK 7 — Stwórz grub.cfg (ZAWSZE nadpisuj, sprawdź pliki)
-    // ========================================================
-    // FIX: Zawsze nadpisuj grub.cfg + sprawdź czy pliki istnieją
-    const write_grub_cfg = b.addSystemCommand(&.{
-        "sh", "-c",
-        // Sprawdź czy pliki istnieją przed pisaniem configu
-        "echo '[GRUB] Sprawdzanie plikow...' && " ++
-            "ls -la " ++ iso_dir ++ "/kernel.elf && " ++
-            "ls -la " ++ iso_dir ++ "/userspace.bin && " ++
-            "echo '[GRUB] Tworzenie grub.cfg...' && " ++
-            "cat > " ++ grub_dir ++ "/grub.cfg << 'EOF'\n" ++
-            "set timeout=0\n" ++
-            "set default=0\n" ++
-            "menuentry \"Cosinus OS\" {\n" ++
-            "    multiboot2 /boot/kernel.elf\n" ++
-            "    module2    /boot/userspace.bin userspace\n" ++
-            "    boot\n" ++
-            "}\n" ++
-            "EOF\n" ++
-            "echo '[GRUB] Config utworzony:' && " ++
-            "cat " ++ grub_dir ++ "/grub.cfg",
-    });
-    // FIX: Zależy od OBU kopii żeby pliki na pewno były
-    write_grub_cfg.step.dependOn(&copy_kernel_to_iso.step);
-    write_grub_cfg.step.dependOn(&copy_userspace_to_iso.step);
+    // ============================================================
+    // TWORZENIE ISO
+    // ============================================================
+    const iso_step = b.step("iso", "Build ISO");
 
-    // ========================================================
-    // KROK 8 — Zbuduj ISO (grub-mkrescue)
-    // ========================================================
-    const make_iso = b.addSystemCommand(&.{
+    const grub_mkrescue = b.addSystemCommand(&.{
         "grub-mkrescue",
         "-o",
-        iso_out,
-        "iso",
+        build_dir ++ "/cosinusos.iso",
+        iso_root,
     });
-    make_iso.step.dependOn(&write_grub_cfg.step);
 
-    // ========================================================
-    // KROK 9 — DIAGNOSTYKA: Sprawdź zawartość ISO
-    // ========================================================
-    const check_iso = b.addSystemCommand(&.{
-        "sh", "-c",
-        "echo '' && " ++
-            "echo '========================================' && " ++
-            "echo '=== DIAGNOSTYKA ZAWARTOSCI ISO ========' && " ++
-            "echo '========================================' && " ++
-            "echo '' && " ++
-            "echo '--- Pliki w ISO (isoinfo) ---' && " ++
-            "(isoinfo -i " ++ iso_out ++ " -l 2>/dev/null || echo 'BLAD: isoinfo nie dziala') && " ++
-            "echo '' && " ++
-            "echo '--- Szukam kernel/userspace ---' && " ++
-            "isoinfo -i " ++ iso_out ++ " -l | grep -E '(kernel|userspace|grub)' || " ++
-            "echo 'OSTRZEZENIE: Nie znaleziono plikow kernel/userspace!' && " ++
-            "echo '' && " ++
-            "echo '--- Hexdump naglowka ISO (pierwsze 32 bajty) ---' && " ++
-            "xxd -l 32 " ++ iso_out ++ " && " ++
-            "echo '' && " ++
-            "echo '--- Rozmiar plikow w iso/boot/ ---' && " ++
-            "ls -la iso/boot/ 2>/dev/null || echo 'BLAD: Brak katalogu iso/boot/' && " ++
-            "echo '' && " ++
-            "echo '========================================'",
-    });
-    check_iso.step.dependOn(&make_iso.step);
+    grub_mkrescue.step.dependOn(&prepare_iso.step);
+    iso_step.dependOn(&grub_mkrescue.step);
 
-    // ========================================================
-    // KROK 10 — Zbuduj raw disk image (64 MB)
-    // ========================================================
-    const make_img = b.addSystemCommand(&.{
-        "sh", "-c",
-        "dd if=/dev/zero of=" ++ img_out ++ " bs=1M count=64 2>/dev/null && " ++
-            "dd if=" ++ iso_out ++ " of=" ++ img_out ++ " conv=notrunc 2>/dev/null && " ++
-            "echo '[IMG] Obraz dysku utworzony: " ++ img_out ++ "'",
-    });
-    make_img.step.dependOn(&check_iso.step);
+    // ============================================================
+    // DIAGNOSTYKA
+    // ============================================================
+    const diag_step = b.step("diag", "Diagnostyka builda");
 
-    // ========================================================
-    // KROK 11 — Uruchom QEMU
-    // ========================================================
-    var qemu_args = std.ArrayListUnmanaged([]const u8){};
-    defer qemu_args.deinit(b.allocator);
+    const diag_cmd = b.addSystemCommand(&.{ "sh", "-c", "echo '=== DIAGNOSTYKA ===' && " ++
+        "ls -lh " ++ build_dir ++ "/kernel.elf " ++ build_dir ++ "/userspace.bin 2>/dev/null || echo 'brak któregoś pliku!' && " ++
+        "cat iso/boot/grub/grub.cfg 2>/dev/null || echo 'brak grub.cfg' && " ++
+        "echo '--- pierwsze 256 bajtów ISO ---' && " ++
+        "hexdump -C " ++ build_dir ++ "/cosinusos.iso | head -n 16" });
 
-    qemu_args.appendSlice(b.allocator, &.{
+    diag_cmd.step.dependOn(iso_step);
+    diag_step.dependOn(&diag_cmd.step);
+
+    // ============================================================
+    // QEMU – wersja na Zig 0.15+ (Managed ArrayList)
+    // ============================================================
+    const run_step = b.step("run", "Uruchom w QEMU");
+
+    var qemu_args = std.array_list.Managed([]const u8).init(b.allocator);
+    defer qemu_args.deinit();
+
+    qemu_args.appendSlice(&.{
         "qemu-system-x86_64",
         "-cdrom",
-        iso_out,
-        "-drive",
-        "file=" ++ img_out ++ ",format=raw,index=0,media=disk",
+        build_dir ++ "/cosinusos.iso",
         "-m",
         "512M",
         "-serial",
@@ -220,53 +156,34 @@ pub fn build(b: *std.Build) void {
         "qemu64",
         "-smp",
         "2",
-    }) catch @panic("OOM");
+    }) catch unreachable;
 
     if (debug) {
-        qemu_args.appendSlice(b.allocator, &.{ "-d", "int,cpu_reset", "-D", build_dir ++ "/qemu.log" }) catch @panic("OOM");
+        qemu_args.appendSlice(&.{
+            "-d",         "int,guest_errors,unimp",
+            "-D",         build_dir ++ "/qemu-debug.log",
+            "-no-reboot", "-no-shutdown",
+        }) catch unreachable;
     }
 
     if (qemu_wait_gdb) {
-        qemu_args.appendSlice(b.allocator, &.{ "-s", "-S" }) catch @panic("OOM");
+        qemu_args.appendSlice(&.{ "-s", "-S" }) catch unreachable;
     }
 
-    const run_qemu = b.addSystemCommand(qemu_args.items);
-    run_qemu.step.dependOn(&make_img.step);
+    const qemu_run = b.addSystemCommand(qemu_args.items);
+    run_step.dependOn(diag_step);
+    run_step.dependOn(&qemu_run.step);
 
-    // ========================================================
-    // Eksponowane kroki (zig build <krok>)
-    // ========================================================
+    // ============================================================
+    // DEFAULT + CLEAN
+    // ============================================================
+    if (skip_qemu) {
+        b.default_step.dependOn(diag_step);
+    } else {
+        b.default_step.dependOn(run_step);
+    }
 
-    // zig build          → pełny build + QEMU
-    const default_step = b.default_step;
-    default_step.dependOn(&run_qemu.step);
-
-    // zig build iso      → tylko ISO bez QEMU
-    const iso_step = b.step("iso", "Tylko zbuduj ISO bez uruchamiania QEMU");
-    iso_step.dependOn(&check_iso.step);
-
-    // zig build img      → ISO + raw disk image
-    const img_step = b.step("img", "Zbuduj ISO + raw disk image");
-    img_step.dependOn(&make_img.step);
-
-    // zig build kernel   → tylko kernel.elf
-    const kernel_step = b.step("kernel", "Tylko skompiluj kernel.elf");
-    kernel_step.dependOn(&link_kernel.step);
-
-    // zig build userspace → tylko userspace
-    const us_step = b.step("userspace", "Tylko skompiluj userspace");
-    us_step.dependOn(&copy_userspace.step);
-
-    // zig build check    → sprawdź ISO bez buildowania
-    const check_step = b.step("check", "Sprawdź zawartość istniejącego ISO");
-    check_step.dependOn(&check_iso.step);
-
-    // zig build run      → uruchom QEMU (zakłada że ISO już istnieje)
-    const run_step = b.step("run", "Uruchom QEMU");
-    run_step.dependOn(&run_qemu.step);
-
-    // zig build clean    → usuń katalog build/
-    const clean = b.addSystemCommand(&.{ "rm", "-rf", build_dir, "iso" });
-    const clean_step = b.step("clean", "Usuń katalog build/ i iso/");
-    clean_step.dependOn(&clean.step);
+    const clean_step = b.step("clean", "Usuń pliki builda");
+    const clean_cmd = b.addSystemCommand(&.{ "rm", "-rf", build_dir, iso_root });
+    clean_step.dependOn(&clean_cmd.step);
 }
