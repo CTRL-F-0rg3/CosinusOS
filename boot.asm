@@ -18,14 +18,16 @@ extern kernel_main
 
 _start:
     cli
-    mov esp, stack_top - 0x10
 
-    ; Zapisz multiboot magic (eax) i info pointer (ebx) na stosie
-    ; bo edi/esi będą zniszczone przez page table setup
-    push ebx        ; [esp+4] = mb_info
-    push eax        ; [esp+0] = mb_magic
+    ; Zachowaj magic i info ZANIM cokolwiek zniszczymy
+    ; ebx = mb_info (od GRUB), eax = magic
+    mov [mb_magic_save], eax
+    mov [mb_info_save],  ebx
 
-    ; Sprawdź long mode
+    ; Ustaw tymczasowy stos (daleko od page tables które będą pod 0x1000)
+    mov esp, 0x90000
+
+    ; Sprawdź czy CPU wspiera long mode
     mov eax, 0x80000000
     cpuid
     cmp eax, 0x80000001
@@ -35,70 +37,63 @@ _start:
     test edx, (1 << 29)
     jz .no_longmode
 
-    ; Buduj page tables (identity map 0-4GB przez 2MB huge pages)
+    ; ── Zeruj obszar page tables (0x1000 - 0x6000) ──
     mov edi, 0x1000
     xor eax, eax
-    mov ecx, 5 * 1024
+    mov ecx, 5 * 1024       ; 5 stron × 1024 dwordów = 5 × 4KB
     rep stosd
 
-    ; P4[0]   → P3lo @ 0x2000
-    mov dword [0x1000],        0x2003
-    ; P4[256] → P3hi @ 0x3000
-    mov dword [0x1000 + 256*8], 0x3003
-    ; P3lo[0] → P2lo @ 0x4000
-    mov dword [0x2000], 0x4003
-    ; P3lo[1] → P2hi @ 0x5000
-    mov dword [0x2008], 0x5003
-    ; P3hi[0] → P2lo @ 0x4000 (mirror)
-    mov dword [0x3000], 0x4003
+    ; P4[0]    → P3lo @ 0x2000  (0 - 1GB)
+    mov dword [0x1000 +   0*8], 0x2003
+    ; P4[1]    → P3hi @ 0x3000  (1 - 2GB)
+    mov dword [0x1000 +   1*8], 0x3003
+    ; P4[256]  → P3lo (mirror dla kernel space wyżej)
+    mov dword [0x1000 + 256*8], 0x2003
 
-    ; P2lo: 512 huge pages 0-1GB
+    ; P3lo[0] → P2a @ 0x4000  (0 - 1GB: wpisy 0-511)
+    mov dword [0x2000 + 0*8], 0x4003
+    ; P3hi[0] → P2b @ 0x5000  (1 - 2GB)
+    mov dword [0x3000 + 0*8], 0x5003
+
+    ; P2a: identity map 0–1GB (512 × 2MB huge pages)
     mov edi, 0x4000
-    mov eax, 0x83
+    mov eax, 0x83           ; G=0 | PS=1 | R/W=1 | P=1
     mov ecx, 512
-.fill_p2lo:
+.fill_p2a:
     mov [edi], eax
     add eax, 0x200000
     add edi, 8
-    loop .fill_p2lo
+    loop .fill_p2a
 
-    ; P2hi: 512 huge pages 1-2GB
+    ; P2b: identity map 1–2GB
     mov edi, 0x5000
-    mov eax, 0x40000083
+    mov eax, 0x40000083     ; base 1GB
     mov ecx, 512
-.fill_p2hi:
+.fill_p2b:
     mov [edi], eax
     add eax, 0x200000
     add edi, 8
-    loop .fill_p2hi
+    loop .fill_p2b
 
     ; Włącz PAE
     mov eax, cr4
     or  eax, (1 << 5)
     mov cr4, eax
 
-    ; CR3 = P4
+    ; Załaduj P4
     mov eax, 0x1000
     mov cr3, eax
 
-    ; Włącz long mode
+    ; Włącz long mode (EFER.LME)
     mov ecx, 0xC0000080
     rdmsr
     or  eax, (1 << 8)
     wrmsr
 
-    ; Włącz paging
+    ; Włącz paging + protected mode
     mov eax, cr0
-    or  eax, (1 << 31) | (1 << 0)
+    or  eax, (1 << 31) | 1
     mov cr0, eax
-
-    ; Przywróć magic i mb_info ze stosu DO rejestrów przed skokiem
-    ; (w trybie 32-bit, esp wciąż działa)
-    pop eax         ; eax = mb_magic
-    pop ecx         ; ecx = mb_info
-    ; Zachowaj w ebp/ebx które przeżyją jmp do 64-bit
-    mov ebp, eax    ; ebp = mb_magic
-    mov ebx, ecx    ; ebx = mb_info
 
     lgdt [gdt64.ptr]
     jmp  0x08:.longmode64
@@ -110,6 +105,7 @@ _start:
 ; ─────────────────────────────────────────────
 bits 64
 .longmode64:
+    ; Załaduj data segmenty
     mov ax, 0x10
     mov ds, ax
     mov es, ax
@@ -117,12 +113,14 @@ bits 64
     mov gs, ax
     mov ss, ax
 
+    ; Ustaw właściwy 64-bit stos
     mov rsp, stack_top
 
-    ; Przenieś magic i mb_info z ebp/ebx → rdi/rsi (ABI argumenty)
-    ; movzx zero-extenduje 32-bit → 64-bit bezpiecznie
-    movzx rdi, ebp      ; rdi = mb_magic
-    movzx rsi, ebx      ; rsi = mb_info
+    ; Wczytaj zachowane wartości (zero-extend 32→64)
+    mov eax, [mb_magic_save]
+    mov ecx, [mb_info_save]
+    movzx rdi, eax   ; arg1 = magic
+    movzx rsi, ecx   ; arg2 = mb_info ptr
 
     call kernel_main
 
@@ -137,15 +135,18 @@ align 8
 
 gdt64:
     dq 0
-    dq (1 << 43) | (1 << 44) | (1 << 47) | (1 << 53)  ; code 0x08
-    dq (1 << 41) | (1 << 44) | (1 << 47)                ; data 0x10
+    dq (1<<43)|(1<<44)|(1<<47)|(1<<53)  ; 0x08 kernel code 64-bit
+    dq (1<<41)|(1<<44)|(1<<47)           ; 0x10 kernel data
 
 gdt64.ptr:
     dw $ - gdt64 - 1
     dq gdt64
 
+mb_magic_save: dd 0
+mb_info_save:  dd 0
+
 section .bss
 align 16
 stack:
-    resb 32768          ; 32KB stack dla boot
+    resb 65536   ; 64KB boot stack (daleko od page tables)
 stack_top:
