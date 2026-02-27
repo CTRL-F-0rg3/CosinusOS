@@ -258,7 +258,25 @@ unsafe fn zpg_locked() -> PhysAddr {
 // Pobierz lub utwórz entry w tablicy stron
 unsafe fn goc(tab: PhysAddr, idx: usize, flags: u64) -> PhysAddr {
     let t = &mut *pt(tab);
-    if !pe(t.e[idx]) { let c = zpg(); t.e[idx] = pte(c, flags); }
+    if !pe(t.e[idx]) {
+        // Brak wpisu - alokuj nową tablicę
+        let c = zpg(); t.e[idx] = pte(c, flags);
+    } else if t.e[idx] & (1 << 7) != 0 {
+        // PS bit (bit 7) = huge page (2MB) - rozkładamy na 512 × 4KB
+        let huge_phys = t.e[idx] & 0x000F_FFFF_FFE0_0000; // adres bazowy 2MB
+        let c = zpg(); // nowa P1 tablica (już wyzerowana przez zpg)
+        let p1 = &mut *pt(c);
+        for j in 0..512usize {
+            let phys = huge_phys + j as u64 * PAGE_SIZE as u64;
+            p1.e[j] = pte(phys, PTE_W);
+        }
+        t.e[idx] = pte(c, flags); // podmień: huge page → P1 pointer
+        // KRYTYCZNE: flush całego TLB przez reload CR3
+        // (invlpg nie wystarczy bo stary huge page mógł być w TLB)
+        let cr3: u64;
+        asm!("mov {}, cr3", out(reg) cr3, options(nomem, nostack));
+        asm!("mov cr3, {}", in(reg) cr3, options(nostack));
+    }
     pa(t.e[idx])
 }
 unsafe fn pt_empty(p: PhysAddr) -> bool { (*pt(p)).e.iter().all(|&e| e == 0) }
@@ -266,10 +284,21 @@ unsafe fn pt_empty(p: PhysAddr) -> bool { (*pt(p)).e.iter().all(|&e| e == 0) }
 static mut K_P4:    PhysAddr = 0;
 static mut US_ENTRY: VirtAddr = 0; // entry point userspace (dla komendy 'userspace')
 
-pub unsafe fn vmm_init(cr3: PhysAddr) { K_P4 = cr3; }
+pub unsafe fn vmm_init(boot_cr3: PhysAddr) {
+    // Tworzymy nowy P4 jako kopię boot P4
+    // Kopiujemy wszystkie 512 wpisów 1:1 (zachowując PS/huge bity)
+    // Nowy P4 wskazuje na te same P3/P2 co boot P4
+    // Dzięki temu goc() może bezpiecznie modyfikować wpisy
+    // nie dotykając oryginalnych boot struktur
+    let new_p4 = zpg_locked();
+    let boot = &*pt(boot_cr3);
+    let new  = &mut *pt(new_p4);
+    for i in 0..512 { new.e[i] = boot.e[i]; }
+    // Przełącz na nowy P4
+    core::arch::asm!("mov cr3, {}", in(reg) new_p4, options(nostack));
+    K_P4 = new_p4;
+}
 
-// Mapuj wirtualny adres v → fizyczny p w przestrzeni p4, z flagami f
-// Nadpisz PTE - bezpieczna wersja która tworzy tablice jeśli ich nie ma
 pub unsafe fn vmap(p4: PhysAddr, v: VirtAddr, p: PhysAddr, f: u64) -> i32 {
     if v & 0xFFF != 0 || p & 0xFFF != 0 || p4 == 0 { return -1; }
     MM_LOCK.lock();
@@ -334,9 +363,13 @@ pub unsafe fn valid_buf(p4: PhysAddr, ptr: VirtAddr, len: usize) -> bool {
     true
 }
 pub unsafe fn new_user_p4() -> PhysAddr {
+    // Kopiuj CAŁY P4 (wszystkie 512 wpisów)
+    // Kernel code/stack/data jest pod 0x101000 = P4[0] więc musimy
+    // mieć P4[0..255] tak samo jak K_P4
+    // Izolacja user/kernel przez prawa dostępu (PTE_U), nie przez osobne P4
     let n = zpg_locked();
     let src = &*pt(K_P4); let dst = &mut *pt(n);
-    for i in 256..512 { dst.e[i] = src.e[i]; }
+    for i in 0..512 { dst.e[i] = src.e[i]; }
     n
 }
 
@@ -449,6 +482,7 @@ unsafe fn init_pic() {
 unsafe fn init_pit() {
     let d = (1193180u32 / 100) as u16;
     outb(0x43, 0x36); outb(0x40, (d & 0xFF) as u8); outb(0x40, (d >> 8) as u8);
+    asm!("sti", options(nomem, nostack)); // Włącz przerwania - od teraz timer działa
 }
 
 // ============================================================================
@@ -623,6 +657,7 @@ pub unsafe fn sched_init() {
 
 // Wątek kernelowy (działa z K_P4)
 pub unsafe fn spawn_k(name: &str, entry: u64, arg: u64) -> i32 {
+    asm!("cli", options(nomem, nostack)); // Nie pozwól timerowi przerwać tworzenia wątku
     for i in 0..MAX_THREADS {
         if THREADS[i].state != TS::Dead { continue; }
         let t = &mut THREADS[i];
@@ -631,11 +666,12 @@ pub unsafe fn spawn_k(name: &str, entry: u64, arg: u64) -> i32 {
             vmap(K_P4, ks + p as u64 * PAGE_SIZE as u64, mm_alloc(), PTE_W);
         }
         let kt = ks + KERNEL_STACK_SIZE as u64;
-        t.id = i as u32; t.state = TS::Ready; t.prio = 10;
+        t.id = i as u32; t.prio = 10;
         t.ktop = kt; t.utop = kt; t.cr3 = K_P4; t.ticks = 0;
         init_thread_stack(t, kt, kt, entry, arg, false);
         set_name(t, name);
         NTHREADS.fetch_add(1, Ordering::Relaxed);
+        t.state = TS::Ready; // OSTATNI - bezpieczne dla schedulera
         let mut buf = [0u8; 24];
         print("  [T#"); print(num_str(i, &mut buf)); print("] "); print(name); print("\n");
         return i as i32;
@@ -645,6 +681,7 @@ pub unsafe fn spawn_k(name: &str, entry: u64, arg: u64) -> i32 {
 
 // Wątek userspace w istniejącej przestrzeni adresowej cr3
 pub unsafe fn spawn_user_on_cr3(name: &str, entry: u64, arg: u64, cr3: PhysAddr) -> i32 {
+    asm!("cli", options(nomem, nostack));
     for i in 0..MAX_THREADS {
         if THREADS[i].state != TS::Dead { continue; }
         let t = &mut THREADS[i];
@@ -660,10 +697,11 @@ pub unsafe fn spawn_user_on_cr3(name: &str, entry: u64, arg: u64, cr3: PhysAddr)
             vmap(cr3, us + p as u64 * PAGE_SIZE as u64, mm_alloc(), PTE_W | PTE_U);
         }
         let ut = us + USER_STACK_SIZE as u64;
-        t.id = i as u32; t.state = TS::Ready; t.prio = 5;
+        t.id = i as u32; t.prio = 5;
         t.ktop = kt; t.utop = ut; t.cr3 = cr3; t.ticks = 0;
         init_thread_stack(t, kt, ut, entry, arg, true);
         set_name(t, name);
+        t.state = TS::Ready; // OSTATNI
         NTHREADS.fetch_add(1, Ordering::Relaxed);
         let mut buf = [0u8; 24];
         print("  [T#"); print(num_str(i, &mut buf)); print("] "); print(name); print("\n");
