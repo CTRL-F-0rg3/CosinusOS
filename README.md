@@ -1,5 +1,5 @@
 ![Logo Cosinus OS](cosinusoslogo.jpg)
-<<<<<<< HEAD
+
 # Cosinus OS
 
 **Next-generation microkernel. Lightweight. Open. Secure.**
@@ -83,4 +83,4 @@ qemu-system-x86_64 \
   -enable-kvm \
   -cpu host
 =======
->>>>>>> 61f7257 (0.0.6.4)
+
