@@ -862,9 +862,13 @@ pub unsafe fn load_userspace(mod_start: u64, mod_end: u64) -> bool {
 
     // ── ELF64 ───────────────────────────────────────────────────────────────
     let e_type      = *(elf.add(0x10) as *const u16);
-    let e_entry     = *(elf.add(0x18) as *const u64);
+    let e_entry_raw = *(elf.add(0x18) as *const u64);
     let e_phoff     = *(elf.add(0x20) as *const u64);
     let e_phentsize = *(elf.add(0x36) as *const u16) as usize;
+    // ET_DYN (PIE): vaddr w segmentach są relative do 0, dodajemy LOAD_BASE
+    // ET_EXEC: vaddr są absolutne, LOAD_BASE = 0
+    let load_base: u64 = if e_type == 3 { 0x0040_0000u64 } else { 0u64 }; // ET_DYN=3 → PIE
+    let e_entry = load_base + e_entry_raw;
     let e_phnum     = *(elf.add(0x38) as *const u16) as usize;
 
     printc("[US] ELF64 ", col::LCYAN);
@@ -886,12 +890,15 @@ pub unsafe fn load_userspace(mod_start: u64, mod_end: u64) -> bool {
         let p_filesz = *(ph.add(0x20) as *const u64);
         let p_memsz  = *(ph.add(0x28) as *const u64);
         if p_memsz == 0 { continue; }
+        // Ogranicz memsz do rozsądnej wartości (max 2MB per segment)
+        // ET_DYN Rust binary może mieć ogromny BSS z powodu statycznego stosu
+        let p_memsz = core::cmp::min(p_memsz, 2 * 1024 * 1024);
 
         let mut perm = PTE_U;
         if p_flags & 0x2 != 0 { perm |= PTE_W; }
 
-        let seg_start = p_vaddr & !(PAGE_SIZE as u64 - 1);
-        let seg_end   = (p_vaddr + p_memsz + PAGE_SIZE as u64 - 1) & !(PAGE_SIZE as u64 - 1);
+        let seg_start = (load_base + p_vaddr) & !(PAGE_SIZE as u64 - 1);
+        let seg_end   = (load_base + p_vaddr + p_memsz + PAGE_SIZE as u64 - 1) & !(PAGE_SIZE as u64 - 1);
 
         let mut vaddr = seg_start;
         while vaddr < seg_end {
@@ -903,7 +910,8 @@ pub unsafe fn load_userspace(mod_start: u64, mod_end: u64) -> bool {
             core::ptr::write_bytes(dst, 0, PAGE_SIZE); // wyzeruj (dla BSS)
 
             // Skopiuj dane z pliku ELF jeśli ta strona ma dane
-            let page_off = if vaddr >= p_vaddr { vaddr - p_vaddr } else { 0 };
+            let vaddr_rel = vaddr - load_base; // vaddr w przestrzeni pliku ELF
+            let page_off = if vaddr_rel >= p_vaddr { vaddr_rel - p_vaddr } else { 0 };
             if page_off < p_filesz {
                 let file_off = p_offset + page_off;
                 let copy_n   = core::cmp::min(
@@ -925,6 +933,8 @@ pub unsafe fn load_userspace(mod_start: u64, mod_end: u64) -> bool {
     }
 
     US_ENTRY = e_entry;
+    printc("[US] entry_final=", col::LCYAN); phex!(e_entry); print(" load_base="); phex!(load_base); print("
+");
     let tid = spawn_user_on_cr3("userspace", e_entry, 0, cr3);
     if tid >= 0 {
         printc("[US] Watek #", col::LGREEN); pnum!(tid); print(" OK
