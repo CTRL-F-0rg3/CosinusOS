@@ -835,7 +835,8 @@ pub unsafe fn load_userspace(mod_start: u64, mod_end: u64) -> bool {
 
     if magic != 0x464C457F {
         // ── FLAT BINARY ─────────────────────────────────────────────────────
-        printc("[US] Raw binary", col::LCYAN);
+        printc("[US] Raw binary
+", col::LCYAN);
         let cr3   = new_user_p4();
         const BIN_BASE: u64 = 0x0040_0000;
         let pages = (mod_sz + PAGE_SIZE - 1) / PAGE_SIZE;
@@ -850,10 +851,13 @@ pub unsafe fn load_userspace(mod_start: u64, mod_end: u64) -> bool {
             if n < PAGE_SIZE { core::ptr::write_bytes(dst.add(n), 0, PAGE_SIZE - n); }
         }
         US_ENTRY = BIN_BASE;
-        printc("[US] Flat binary @ ", col::LCYAN); phex!(BIN_BASE); print("");
+        printc("[US] Flat binary @ ", col::LCYAN); phex!(BIN_BASE); print("
+");
         let tid = spawn_user_on_cr3("userspace", BIN_BASE, 0, cr3);
-        if tid >= 0 { printc("[US] Watek #", col::LGREEN); pnum!(tid); print(" OK"); return true; }
-        else        { printc("[US] Brak slotow!", col::LRED); return false; }
+        if tid >= 0 { printc("[US] Watek #", col::LGREEN); pnum!(tid); print(" OK
+"); return true; }
+        else        { printc("[US] Brak slotow!
+", col::LRED); return false; }
     }
 
     // ── ELF64 ───────────────────────────────────────────────────────────────
@@ -870,7 +874,8 @@ pub unsafe fn load_userspace(mod_start: u64, mod_end: u64) -> bool {
     printc("[US] ELF64 ", col::LCYAN);
     if e_type == 2 { print("ET_EXEC"); } else { print("ET_DYN"); }
     print(" entry="); phex!(e_entry);
-    print(" phnum="); let mut nb=[0u8;24]; print(num_str(e_phnum,&mut nb)); print("");
+    print(" phnum="); let mut nb=[0u8;24]; print(num_str(e_phnum,&mut nb)); print("
+");
 
     let cr3 = new_user_p4();
 
@@ -923,15 +928,18 @@ pub unsafe fn load_userspace(mod_start: u64, mod_end: u64) -> bool {
         let mut buf = [0u8; 24];
         print("  [SEG] vaddr="); phex!(p_vaddr);
         print(" filesz="); print(num_str(p_filesz as usize, &mut buf));
-        print(" memsz=");  print(num_str(p_memsz  as usize, &mut buf)); print("");
+        print(" memsz=");  print(num_str(p_memsz  as usize, &mut buf)); print("
+");
     }
 
-    US_ENTRY = e_entry;");
+    US_ENTRY = e_entry;
     let tid = spawn_user_on_cr3("userspace", e_entry, 0, cr3);
     if tid >= 0 {
-        printc("[US] Watek #", col::LGREEN); pnum!(tid); print(" OK"); true
+        printc("[US] Watek #", col::LGREEN); pnum!(tid); print(" OK
+"); true
     } else {
-        printc("[US] Brak slotow!", col::LRED); false
+        printc("[US] Brak slotow!
+", col::LRED); false
     }
 }
 
@@ -945,30 +953,30 @@ unsafe fn term_prompt() { printc("\n#$> ", col::LGREEN); }
 
 unsafe fn term_process_cmd() {
     let line = core::str::from_utf8_unchecked(&TERM_LINE[..TERM_LEN]);
-    print("\r\n");
+    print("\n");
     let cmd = line.trim_ascii();
     match cmd {
         "help" => {
-            printc("=== CosinusOS Kernel Terminal ===\r\n", col::YELLOW);
-            print("  help       - ta pomoc\r\n");
-            print("  mem        - pamiec fizyczna\r\n");
-            print("  threads    - lista watkow\r\n");
-            print("  userspace  - uruchom/sprawdz userspace\r\n");
-            print("  ticks      - licznik tickow\r\n");
-            print("  uptime     - czas pracy\r\n");
-            print("  cr3        - aktualny CR3\r\n");
-            print("  regs       - rejestry CPU\r\n");
-            print("  clear      - wyczysc ekran\r\n");
-            print("  panic      - test kernel panic\r\n");
+            printc("=== CosinusOS Kernel Terminal ===\n", col::YELLOW);
+            print("  help       - ta pomoc\n");
+            print("  mem        - pamiec fizyczna\n");
+            print("  threads    - lista watkow\n");
+            print("  userspace  - uruchom/sprawdz userspace\n");
+            print("  ticks      - licznik tickow\n");
+            print("  uptime     - czas pracy\n");
+            print("  cr3        - aktualny CR3\n");
+            print("  regs       - rejestry CPU\n");
+            print("  clear      - wyczysc ekran\n");
+            print("  panic      - test kernel panic\n");
         }
         "mem" => {
-            printc("=== Pamiec ===\r\n", col::YELLOW);
-            print("  Wolne: "); pnum!(mm_free_kb()); print(" KB\r\n");
-            print("  Uzyte: "); pnum!(mm_used_kb()); print(" KB\r\n");
-            print("  Razem: "); pnum!(mm_total_kb()); print(" KB\r\n");
+            printc("=== Pamiec ===\n", col::YELLOW);
+            print("  Wolne: "); pnum!(mm_free_kb()); print(" KB\n");
+            print("  Uzyte: "); pnum!(mm_used_kb()); print(" KB\n");
+            print("  Razem: "); pnum!(mm_total_kb()); print(" KB\n");
         }
         "threads" => {
-            printc("=== Watki ===\r\n", col::YELLOW);
+            printc("=== Watki ===\n", col::YELLOW);
             let cur = CUR.load(Ordering::Relaxed);
             for i in 0..MAX_THREADS {
                 let t = &THREADS[i];
@@ -984,7 +992,7 @@ unsafe fn term_process_cmd() {
                 let ne = t.name.iter().position(|&b| b == 0).unwrap_or(16);
                 print(core::str::from_utf8_unchecked(&t.name[..ne]));
                 printc(ss, sc);
-                print(" ticks="); pnum!(t.ticks as usize); print("\r\n");
+                print(" ticks="); pnum!(t.ticks as usize); print("\n");
             }
         }
         "userspace" => {
@@ -994,46 +1002,46 @@ unsafe fn term_process_cmd() {
                 let ne = THREADS[i].name.iter().position(|&b| b == 0).unwrap_or(16);
                 if &THREADS[i].name[..ne] == b"userspace" {
                     printc("Userspace dziala jako watek #", col::LGREEN);
-                    pnum!(i); print("\r\n"); found = true; break;
+                    pnum!(i); print("\n"); found = true; break;
                 }
             }
             if !found {
                 if US_ENTRY != 0 {
-                    printc("Uruchamiam userspace @ ", col::LCYAN); phex!(US_ENTRY); print("\r\n");
+                    printc("Uruchamiam userspace @ ", col::LCYAN); phex!(US_ENTRY); print("\n");
                     let cr3 = new_user_p4();
                     let tid = spawn_user_on_cr3("userspace\0", US_ENTRY, 0, cr3);
-                    if tid >= 0 { printc("  Watek #", col::LGREEN); pnum!(tid as usize); print(" OK\r\n"); }
-                    else { printc("  Brak slotow!\r\n", col::LRED); }
+                    if tid >= 0 { printc("  Watek #", col::LGREEN); pnum!(tid as usize); print(" OK\n"); }
+                    else { printc("  Brak slotow!\n", col::LRED); }
                 } else {
-                    printc("Brak zaladowanego userspace (brak modulu MB2)\r\n", col::LRED);
+                    printc("Brak zaladowanego userspace (brak modulu MB2)\n", col::LRED);
                 }
             }
         }
-        "ticks"  => { print("Ticks: "); pnum!(TICK as usize); print("\r\n"); }
+        "ticks"  => { print("Ticks: "); pnum!(TICK as usize); print("\n"); }
         "uptime" => {
             print("Uptime: "); pnum!((TICK / 100) as usize);
-            print("s ("); pnum!(TICK as usize); print(" ticks)\r\n");
+            print("s ("); pnum!(TICK as usize); print(" ticks)\n");
         }
         "cr3" => {
-            let cr3: u64; core::arch::asm!("mov {}, cr3", out(reg) cr3, options(nomem, nostack));
-            print("CR3="); phex!(cr3); print("\r\n");
+            let cr3: u64; asm!("mov {},cr3", out(reg) cr3, options(nomem, nostack));
+            print("CR3="); phex!(cr3); print("\n");
         }
         "regs" => {
-            let mut rsp: u64; let mut rbp: u64; let mut cr3: u64; let mut cr2: u64; let mut rfl: u64;
-            core::arch::asm!("mov {}, rsp", out(reg) rsp, options(nomem, nostack));
-            core::arch::asm!("mov {}, rbp", out(reg) rbp, options(nomem, nostack));
-            core::arch::asm!("mov {}, cr3", out(reg) cr3, options(nomem, nostack));
-            core::arch::asm!("mov {}, cr2", out(reg) cr2, options(nomem, nostack));
-            core::arch::asm!("pushfq; pop {}", out(reg) rfl, options(nomem));
-            printc("=== Rejestry ===\r\n", col::YELLOW);
-            print("  RSP="); phex!(rsp); print("  RBP="); phex!(rbp); print("\r\n");
-            print("  CR3="); phex!(cr3); print("  CR2="); phex!(cr2); print("\r\n");
-            print("  RFLAGS="); phex!(rfl); print("\r\n");
+            let mut rsp:u64; let mut rbp:u64; let mut cr3:u64; let mut cr2:u64; let mut rfl:u64;
+            asm!("mov {},rsp", out(reg) rsp, options(nomem, nostack));
+            asm!("mov {},rbp", out(reg) rbp, options(nomem, nostack));
+            asm!("mov {},cr3", out(reg) cr3, options(nomem, nostack));
+            asm!("mov {},cr2", out(reg) cr2, options(nomem, nostack));
+            asm!("pushfq; pop {}", out(reg) rfl, options(nomem));
+            printc("=== Rejestry ===\n", col::YELLOW);
+            print("  RSP="); phex!(rsp); print("  RBP="); phex!(rbp); print("\n");
+            print("  CR3="); phex!(cr3); print("  CR2="); phex!(cr2); print("\n");
+            print("  RFLAGS="); phex!(rfl); print("\n");
         }
         "clear" => { cls(); }
         "panic" => { panic_no_dyn("Test panic z terminala"); }
         "" => {}
-        _ => { printc("Nieznana: ", col::LRED); print(cmd); print("\r\nWpisz 'help'\r\n"); }
+        _ => { printc("Nieznana: ", col::LRED); print(cmd); print("\nWpisz 'help'\n"); }
     }
     TERM_LEN = 0;
 }
