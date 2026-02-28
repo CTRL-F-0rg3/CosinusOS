@@ -61,9 +61,11 @@ pub fn build(b: *std.Build) void {
     const userspace_step = b.step("userspace", "Build userspace only");
 
     const cargo_us = b.addSystemCommand(&.{
-        "cargo",           "+nightly",                 "build",        "--release",
-        "--manifest-path", "src/userspace/Cargo.toml", "--target",     "x86_64-unknown-none",
-        "-Z",              "build-std=core,alloc",     "--target-dir", build_dir ++ "/userspace_target",
+        "sh", "-c",
+        "cd src/userspace && cargo +nightly build --release " ++
+            "--target x86_64-unknown-none " ++
+            "-Z build-std=core,alloc " ++
+            "--target-dir ../../" ++ build_dir ++ "/userspace_target",
     });
 
     const copy_us_bin = b.addSystemCommand(&.{
