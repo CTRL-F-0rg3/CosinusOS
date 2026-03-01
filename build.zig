@@ -47,6 +47,9 @@ pub fn build(b: *std.Build) void {
         "ld",
         "-T",
         "linker.ld",
+        "-nostdlib", // nie linkuj standardowej biblioteki
+        "-static", // całkowicie statyczny
+        "-no-pie", // bez PIE (Position Independent Executable)
         "-o",
         build_dir ++ "/kernel.elf",
         "--no-warn-rwx-segments",

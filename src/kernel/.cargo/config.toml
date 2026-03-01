@@ -1,10 +1,6 @@
-# .cargo/config.toml — CosinusOS Kernel
-
-[build]
-target = "x86_64-unknown-none"
-
 [target.x86_64-unknown-none]
 rustflags = [
+    "-C", "link-arg=-Tlinker.ld",
     "-C", "relocation-model=static",
     "-C", "panic=abort",
     "-C", "force-frame-pointers=yes",

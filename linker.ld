@@ -28,6 +28,9 @@ SECTIONS {
     . = ALIGN(4096);
 
     /DISCARD/ : {
+        *(.got)
+        *(.got.plt)
+        *(.plt)
         *(.eh_frame)
         *(.note*)
         *(.comment*)
@@ -35,8 +38,6 @@ SECTIONS {
         *(.dynsym)
         *(.dynstr)
         *(.dynamic)
-        *(.got.plt)
-        *(.plt)
         *(.interp)
     }
 }
