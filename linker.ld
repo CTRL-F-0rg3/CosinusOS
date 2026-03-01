@@ -1,47 +1,42 @@
 OUTPUT_FORMAT(elf64-x86-64)
-OUTPUT_ARCH(i386:x86-64)
 ENTRY(_start)
 
-SECTIONS
-{
-    /* GRUB loads kernel typically at 1MB */
-    . = 1M;
+SECTIONS {
+    . = 0x0000000000400000;
 
-    /* Multiboot header MUST be first */
-    .multiboot ALIGN(8) :
-    {
-        KEEP(*(.multiboot))
+    .text : {
+        *(.text .text.*)
     }
 
-    .text ALIGN(4K) :
-    {
-        *(.text)
-        *(.text.*)
+    .rodata : {
+        *(.rodata .rodata.*)
     }
 
-    .rodata ALIGN(4K) :
-    {
-        *(.rodata)
-        *(.rodata.*)
+    .data : {
+        __data_start = .;
+        *(.data .data.*)
+        __data_end = .;
     }
 
-    .data ALIGN(4K) :
-    {
-        *(.data)
-        *(.data.*)
-    }
-
-    .bss ALIGN(4K) :
-    {
+    .bss : {
+        __bss_start = .;
+        *(.bss .bss.*)
         *(COMMON)
-        *(.bss)
-        *(.bss.*)
+        __bss_end = .;
     }
 
-    /DISCARD/ :
-    {
-        *(.comment)
+    . = ALIGN(4096);
+
+    /DISCARD/ : {
         *(.eh_frame)
         *(.note*)
+        *(.comment*)
+        *(.gnu.hash)
+        *(.dynsym)
+        *(.dynstr)
+        *(.dynamic)
+        *(.got.plt)
+        *(.plt)
+        *(.interp)
     }
 }

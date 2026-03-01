@@ -700,6 +700,30 @@ pub unsafe fn spawn_user_on_cr3(name: &str, entry: u64, arg: u64, cr3: PhysAddr)
         t.id = i as u32; t.prio = 5;
         t.ktop = kt; t.utop = ut; t.cr3 = cr3; t.ticks = 0;
         init_thread_stack(t, kt, ut, entry, arg, true);
+        // DEBUG: sprawdz co jest na stosie
+        let ksp = t.krsp;
+        let stack_entry = *(ksp as *const u64);           // rbx
+        let stack_rbp   = *((ksp+8) as *const u64);       // rbp  
+        let stack_r12   = *((ksp+16) as *const u64);      // r12
+        let stack_r13   = *((ksp+24) as *const u64);      // r13 = ut
+        let stack_r14   = *((ksp+32) as *const u64);      // r14 = entry
+        let stack_tramp = *((ksp+40) as *const u64);      // tramp_u
+        // DEBUG via serial
+        {
+            let mut b = [0u8; 18];
+            serial_print("[DBG] krsp="); serial_print(hex_str(ksp, &mut b));
+            serial_print(" kt="); serial_print(hex_str(kt, &mut b));
+            serial_print("\n");
+            serial_print("[DBG] r14(entry)="); serial_print(hex_str(stack_r14, &mut b));
+            serial_print(" r13(ut)="); serial_print(hex_str(stack_r13, &mut b));
+            serial_print("\n");
+            serial_print("[DBG] tramp="); serial_print(hex_str(stack_tramp, &mut b));
+            serial_print(" expected_tramp=");
+            let eu = tramp_u as *const () as u64;
+            serial_print(hex_str(eu, &mut b));
+            serial_print("\n");
+        }
+        let _ = (stack_entry, stack_rbp, stack_r12);
         set_name(t, name);
         t.state = TS::Ready; // OSTATNI
         NTHREADS.fetch_add(1, Ordering::Relaxed);
@@ -714,43 +738,94 @@ pub unsafe fn spawn_user_on_cr3(name: &str, entry: u64, arg: u64, cr3: PhysAddr)
 // thread_switch pobiera: pop r15,r14,r13,r12,rbp,rbx, ret
 // Więc na stosie musi być (od najniższego adresu):
 //   rbx=0, rbp=0, r12=0, r13=utop, r14=entry, r15=arg, [ret=trampoline]
-unsafe fn init_thread_stack(t: &mut Thread, kt: VirtAddr, ut: VirtAddr, entry: u64, arg: u64, user: bool) {
-    // thread_switch: pop r15, pop r14, pop r13, pop r12, pop rbp, pop rbx, ret
-    // pop bierze od NIŻSZYCH adresów. push! zmniejsza ksp.
-    // Pushujemy od NAJWYŻSZEGO do NAJNIŻSZEGO elementu stosu:
-    //   trampoline (ret) ← najwyższy adres (pushowany pierwszy)
-    //   arg        → r15 (pierwszy pop)
-    //   entry      → r14
-    //   ut         → r13
-    //   0          → r12
-    //   0          → rbp
-    //   0          → rbx ← krsp wskazuje tutaj (najniższy adres, ostatni push)
-    let mut ksp = kt;
-    macro_rules! push { ($v:expr) => { ksp -= 8; *(ksp as *mut u64) = $v as u64; }; }
-    push!(if user { tramp_u as *const () as u64 } else { tramp_k as *const () as u64 }); // ret
-    push!(arg);   // r15 = argument (pierwszy pop)
-    push!(entry); // r14 = entry point
-    push!(ut);    // r13 = user stack top
-    push!(0u64);  // r12
-    push!(0u64);  // rbp
-    push!(0u64);  // rbx  ← krsp wskazuje tutaj
-    t.krsp = ksp;
+// ============================================================
+// POZIOM MODUŁU (src/lib.rs, poza jakąkolwiek funkcją)
+// ============================================================
+
+// 1. global_asm! - NIE potrzebuje unsafe, może być globalnie
+core::arch::global_asm!(
+    ".section .data",
+    ".p2align 3",
+    ".global TRAMP_U_ADDR",
+    ".global TRAMP_K_ADDR",
+    "TRAMP_U_ADDR:",
+    ".quad tramp_u",
+    "TRAMP_K_ADDR:",
+    ".quad tramp_k",
+    ".section .text",
+);
+// 2. Deklaracje extern static - też na poziomie modułu
+extern "C" {
+    pub static TRAMP_U_ADDR: u64;
+    pub static TRAMP_K_ADDR: u64;
 }
 
+// ============================================================
+// DEFINICJA FUNKCJI (również na poziomie modułu, NIE w unsafe!)
+// ============================================================
+
+fn init_thread_stack(
+    t: &mut Thread, 
+    kt: VirtAddr, 
+    ut: VirtAddr, 
+    entry: u64, 
+    arg: u64, 
+    user: bool
+) {
+    let mut ksp = kt;
+
+    // Makro push - definicja wewnątrz funkcji jest OK
+    macro_rules! push { 
+        ($v:expr) => { 
+            ksp -= 8; 
+            *(ksp as *mut u64) = $v as u64; 
+        }; 
+    }
+
+    // 🔴 Wszystkie niebezpieczne operacje wewnątrz unsafe bloku:
+    unsafe {
+        // Dostęp do extern static wymaga unsafe
+        // Użyj read_volatile, aby pobrać WARTOŚĆ (adres funkcji) zapisaną pod adresem statycznym
+        let tramp_addr: u64 = if user { 
+            core::ptr::read_volatile(&TRAMP_U_ADDR) 
+        } else { 
+            core::ptr::read_volatile(&TRAMP_K_ADDR) 
+        };
+        
+        // Dereferencja surowych wskaźników w makrze push! też wymaga unsafe
+        push!(tramp_addr); // ret → trampoline
+        push!(arg);        // r15 = argument (pierwszy pop)
+        push!(entry);      // r14 = entry point
+        push!(ut);         // r13 = user stack top
+        push!(0u64);       // r12
+        push!(0u64);       // rbp
+        push!(0u64);       // rbx ← krsp wskazuje tutaj
+    }
+
+    t.krsp = ksp;
+}
 unsafe fn set_name(t: &mut Thread, name: &str) {
     let b = name.as_bytes();
     for j in 0..core::cmp::min(15, b.len()) { t.name[j] = b[j]; }
 }
 
 // tramp_k: r15=arg, r14=entry
+#[no_mangle]
 #[unsafe(naked)] unsafe extern "C" fn tramp_k() {
     naked_asm!("mov rdi,r15", "call r14", "cli", "hlt");
 }
 // tramp_u: r15=arg, r14=entry, r13=user_rsp
+#[no_mangle]
 #[unsafe(naked)] unsafe extern "C" fn tramp_u() {
     naked_asm!(
-        "push 0x20|3", "push r13", "push 0x202",
-        "push 0x18|3", "push r14", "mov rdi,r15", "iretq",
+        "cli",                          // żadnych przerwań podczas budowania fake-iretq frame
+        "push 0x20|3",                  // SS  = 0x23 (user data)
+        "push r13",                     // RSP = user stack top
+        "push 0x202",                   // RFLAGS = IF=1
+        "push 0x18|3",                  // CS  = 0x1B (user code)
+        "push r14",                     // RIP = entry
+        "mov rdi,r15",                  // arg → rdi
+        "iretq",
     );
 }
 

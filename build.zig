@@ -49,7 +49,9 @@ pub fn build(b: *std.Build) void {
         "linker.ld",
         "-o",
         build_dir ++ "/kernel.elf",
-        "--nmagic",
+        "--no-warn-rwx-segments",
+        "-z",
+        "noexecstack",
         build_dir ++ "/boot.o",
         build_dir ++ "/kernel_target/x86_64-unknown-none/release/libkernel.a",
     });
