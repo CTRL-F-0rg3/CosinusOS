@@ -1,10 +1,10 @@
 OUTPUT_FORMAT(elf64-x86-64)
 ENTRY(_start)
-
 SECTIONS {
     . = 0x0000000000101000;
 
     .boot : {
+        KEEP(*(.multiboot))
         KEEP(*(.multiboot2))
         KEEP(*(.boot))
         *boot.o(.text)
@@ -21,6 +21,8 @@ SECTIONS {
     .data : ALIGN(4096) {
         __data_start = .;
         *(.data .data.*)
+        *(.got)
+        *(.got.plt)
         __data_end = .;
     }
 
@@ -31,7 +33,7 @@ SECTIONS {
     }
 
     /DISCARD/ : {
-        *(.got) *(.plt) *(.eh_frame)
+        *(.plt) *(.eh_frame)
         *(.note*) *(.comment*) *(.debug*)
         *(.gnu.hash) *(.dynsym) *(.dynstr)
         *(.dynamic) *(.interp)

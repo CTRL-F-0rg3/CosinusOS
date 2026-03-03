@@ -678,6 +678,8 @@ pub unsafe fn spawn_k(name: &str, entry: u64, arg: u64) -> i32 {
     }
     -1
 }
+init_thread_stack(t, kt, ut, entry, arg, true);
+
 
 // Wątek userspace w istniejącej przestrzeni adresowej cr3
 pub unsafe fn spawn_user_on_cr3(name: &str, entry: u64, arg: u64, cr3: PhysAddr) -> i32 {
@@ -707,7 +709,8 @@ pub unsafe fn spawn_user_on_cr3(name: &str, entry: u64, arg: u64, cr3: PhysAddr)
         let stack_r12   = *((ksp+16) as *const u64);      // r12
         let stack_r13   = *((ksp+24) as *const u64);      // r13 = ut
         let stack_r14   = *((ksp+32) as *const u64);      // r14 = entry
-        let stack_tramp = *((ksp+40) as *const u64);      // tramp_u
+        let stack_r15   = *((ksp+40) as *const u64);      // r15 = arg
+        let stack_tramp = *((ksp+48) as *const u64);        // tramp_u
         // DEBUG via serial
         {
             let mut b = [0u8; 18];
@@ -731,7 +734,9 @@ pub unsafe fn spawn_user_on_cr3(name: &str, entry: u64, arg: u64, cr3: PhysAddr)
         print("  [T#"); print(num_str(i, &mut buf)); print("] "); print(name); print("\n");
         return i as i32;
     }
+    
     -1
+
 }
 
 // Inicjalizacja stosu wątku tak żeby pasowało do thread_switch
@@ -764,45 +769,43 @@ extern "C" {
 // DEFINICJA FUNKCJI (również na poziomie modułu, NIE w unsafe!)
 // ============================================================
 
-fn init_thread_stack(
-    t: &mut Thread, 
-    kt: VirtAddr, 
-    ut: VirtAddr, 
-    entry: u64, 
-    arg: u64, 
-    user: bool
-) {
+fn init_thread_stack(t: &mut Thread, kt: VirtAddr, ut: VirtAddr, entry: u64, arg: u64, user: bool) {
     let mut ksp = kt;
-
-    // Makro push - definicja wewnątrz funkcji jest OK
-    macro_rules! push { 
-        ($v:expr) => { 
-            ksp -= 8; 
-            *(ksp as *mut u64) = $v as u64; 
-        }; 
-    }
-
-    // 🔴 Wszystkie niebezpieczne operacje wewnątrz unsafe bloku:
+    // Pobierz adres trampoliny przez asm sym - jedyna metoda pewna w no_std
+    let tramp_addr: u64;
     unsafe {
-        // Dostęp do extern static wymaga unsafe
-        // Użyj read_volatile, aby pobrać WARTOŚĆ (adres funkcji) zapisaną pod adresem statycznym
-        let tramp_addr: u64 = if user { 
-            core::ptr::read_volatile(&TRAMP_U_ADDR) 
-        } else { 
-            core::ptr::read_volatile(&TRAMP_K_ADDR) 
-        };
-        
-        // Dereferencja surowych wskaźników w makrze push! też wymaga unsafe
-        push!(tramp_addr); // ret → trampoline
-        push!(arg);        // r15 = argument (pierwszy pop)
-        push!(entry);      // r14 = entry point
-        push!(ut);         // r13 = user stack top
-        push!(0u64);       // r12
-        push!(0u64);       // rbp
-        push!(0u64);       // rbx ← krsp wskazuje tutaj
+        if user {
+            core::arch::asm!(
+                "lea {out}, [{sym}]",
+                out = out(reg) tramp_addr,
+                sym = sym tramp_u,
+                options(nostack, nomem, pure),
+            );
+        } else {
+            core::arch::asm!(
+                "lea {out}, [{sym}]",
+                out = out(reg) tramp_addr,
+                sym = sym tramp_k,
+                options(nostack, nomem, pure),
+            );
+        }
+        ksp -= 8; *(ksp as *mut u64) = tramp_addr;
+        ksp -= 8; *(ksp as *mut u64) = arg;
+        ksp -= 8; *(ksp as *mut u64) = entry;
+        ksp -= 8; *(ksp as *mut u64) = ut;
+        ksp -= 8; *(ksp as *mut u64) = 0u64;
+        ksp -= 8; *(ksp as *mut u64) = 0u64;
+        ksp -= 8; *(ksp as *mut u64) = 0u64;
     }
-
     t.krsp = ksp;
+    // Weryfikacja - wydrukuj co faktycznie jest na stosie
+    unsafe {
+        let tramp_on_stack = *((ksp + 48) as *const u64);
+        if tramp_on_stack != tramp_addr {
+            // Stos zapisany źle - ksp się nie zmienił!
+            serial_print("[FATAL] stos zepsuly! tramp_on_stack != tramp_addr\n");
+        }
+    }
 }
 unsafe fn set_name(t: &mut Thread, name: &str) {
     let b = name.as_bytes();
@@ -926,13 +929,10 @@ pub unsafe fn load_userspace(mod_start: u64, mod_end: u64) -> bool {
             if n < PAGE_SIZE { core::ptr::write_bytes(dst.add(n), 0, PAGE_SIZE - n); }
         }
         US_ENTRY = BIN_BASE;
-        printc("[US] Flat binary @ ", col::LCYAN); phex!(BIN_BASE); print("
-");
+        printc("[US] Flat binary @ ", col::LCYAN); phex!(BIN_BASE); print("");
         let tid = spawn_user_on_cr3("userspace", BIN_BASE, 0, cr3);
-        if tid >= 0 { printc("[US] Watek #", col::LGREEN); pnum!(tid); print(" OK
-"); return true; }
-        else        { printc("[US] Brak slotow!
-", col::LRED); return false; }
+        if tid >= 0 { printc("[US] Watek #", col::LGREEN); pnum!(tid); print(" OK"); return true; }
+        else        { printc("[US] Brak slotow!", col::LRED); return false; }
     }
 
     // ── ELF64 ───────────────────────────────────────────────────────────────
