@@ -10,7 +10,7 @@
 
 Cosinus OS is a modern operating system designed from the ground up with developers in mind. It combines the lightweight nature of a microkernel, an open ecosystem, and an innovative approach to security.
 
-The system is in the early development phase (Early Alpha) and has been actively developed for three months.
+I put the main emphasis on the microkernel and usability, although I primarily aim at desktop, I still integrate this system with my tools that I created.
 
 ---
 
@@ -19,7 +19,7 @@ The system is in the early development phase (Early Alpha) and has been actively
 ### Microkernel
 Designed from scratch with security and modularity in mind. Every component is isolated, every service is optional.
 
-### OrbitMesh (Planned)
+### OrbitMesh (implemented)
 A revolutionary software versioning and distribution system. Easier than Git, faster than traditional CDNs. Peer-to-peer architecture based on BitTorrent concepts.
 
 ### Security
@@ -58,7 +58,7 @@ The following tools are already functional and awaiting integration with the sys
 
 ## System Requirements
 
-- **Architecture**: x86_64
+- **Architecture**: x86_64 and planed Risc-V 
 - **RAM**: Minimum 100 MB
 - **Disk**: Approximately 500 MB free space (ISO + data)
 - **Boot**: BIOS/UEFI (tested in QEMU)
@@ -67,20 +67,8 @@ The following tools are already functional and awaiting integration with the sys
 
 ## Installation and Running
 
-> Warning: Early Alpha – project in active development. For testing purposes only.
+> Warning:  Alpha – project in active development. For testing purposes only.
 
 ### Option 1: QEMU (Recommended for testing)
-
-```bash
-# Download the latest ISO from Releases
-wget [LINK_TO_ISO]
-
-# Run in QEMU
-qemu-system-x86_64 \
-  -m 256 \
-  -hda cosinus-os.iso \
-  -boot d \
-  -enable-kvm \
-  -cpu host
-=======
+you download the iso and you can do everything in the machine's graphical interface (additional module)
 
