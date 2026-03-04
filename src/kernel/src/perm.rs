@@ -1,0 +1,336 @@
+// CosinusOS — perm.rs
+// Struktury CPU: GDT, TSS, IDT, PIC, PIT, ISR
+
+use core::arch::{asm, naked_asm};
+use crate::debug::{col, outb, io_wait, print_raw, printc, hex_str};
+use crate::mm::VirtAddr;
+use crate::threading::schedule;
+
+const DOUBLE_FAULT_STACK_SIZE: usize = 0x4000;
+
+// ── TrapFrame ────────────────────────────────────────────────────────────────
+#[repr(C, align(16))]
+pub struct TF {
+    pub r15:u64, pub r14:u64, pub r13:u64, pub r12:u64,
+    pub r11:u64, pub r10:u64, pub r9:u64,  pub r8:u64,
+    pub rdi:u64, pub rsi:u64, pub rdx:u64, pub rcx:u64,
+    pub rbx:u64, pub rbp:u64, pub rax:u64,
+    pub rip:u64, pub cs:u64,  pub rflags:u64, pub rsp:u64, pub ss:u64,
+}
+
+// ── TSS ──────────────────────────────────────────────────────────────────────
+#[repr(C, packed)]
+pub struct Tss {
+    _r0: u32,
+    pub rsp0: u64, pub rsp1: u64, pub rsp2: u64,
+    _r1: u64,
+    pub ist1: u64, _ist: [u64; 6],
+    _r2: u64, _r3: u16,
+    pub iomap: u16,
+}
+impl Tss {
+    pub const fn new() -> Self {
+        Self {
+            _r0: 0, rsp0: 0, rsp1: 0, rsp2: 0, _r1: 0,
+            ist1: 0, _ist: [0; 6], _r2: 0, _r3: 0,
+            iomap: core::mem::size_of::<Tss>() as u16,
+        }
+    }
+}
+
+pub static mut TSS:      Tss                           = Tss::new();
+pub static mut DF_STACK: [u8; DOUBLE_FAULT_STACK_SIZE] = [0u8; DOUBLE_FAULT_STACK_SIZE];
+
+pub unsafe fn tss_rsp0(v: VirtAddr) { TSS.rsp0 = v; }
+
+// ── GDT ──────────────────────────────────────────────────────────────────────
+#[repr(C, packed)] #[derive(Clone, Copy)]
+struct GdtE { ll: u16, lb: u16, mb: u8, acc: u8, gr: u8, hb: u8 }
+impl GdtE {
+    const fn null() -> Self { Self { ll:0, lb:0, mb:0, acc:0, gr:0, hb:0 } }
+    fn seg(base: u64, lim: u64, acc: u8, gr: u8) -> Self {
+        Self {
+            ll: (lim & 0xFFFF) as u16,
+            lb: (base & 0xFFFF) as u16,
+            mb: ((base >> 16) & 0xFF) as u8,
+            acc,
+            gr: (((lim >> 16) & 0xF) as u8) | (gr & 0xF0),
+            hb: ((base >> 24) & 0xFF) as u8,
+        }
+    }
+}
+
+#[repr(C, packed)] struct GdtTable { e: [GdtE; 6], tss_hi: u64 }
+#[repr(C, packed)] struct GdtPtr   { lim: u16, base: u64 }
+
+static mut GDT:     GdtTable = GdtTable { e: [GdtE::null(); 6], tss_hi: 0 };
+static mut GDT_PTR: GdtPtr   = GdtPtr { lim: 0, base: 0 };
+
+pub unsafe fn init_gdt() {
+    TSS.ist1 = DF_STACK.as_ptr() as u64 + DOUBLE_FAULT_STACK_SIZE as u64;
+    let tb = &raw const TSS as u64;
+    let tl = (core::mem::size_of::<Tss>() - 1) as u64;
+
+    GDT.e[0] = GdtE::null();
+    GDT.e[1] = GdtE::seg(0, 0xFFFFF, 0x9A, 0x20); // 0x08 kern code 64-bit
+    GDT.e[2] = GdtE::seg(0, 0xFFFFF, 0x92, 0x00); // 0x10 kern data
+    GDT.e[3] = GdtE::seg(0, 0xFFFFF, 0xFA, 0x20); // 0x18 user code  (DPL=3)
+    GDT.e[4] = GdtE::seg(0, 0xFFFFF, 0xF2, 0x00); // 0x20 user data  (DPL=3)
+    GDT.e[5] = GdtE::seg(tb, tl, 0x89, 0x00);      // 0x28 TSS
+
+    GDT.tss_hi = tb >> 32;
+    GDT_PTR.lim  = (core::mem::size_of::<GdtTable>() - 1) as u16;
+    GDT_PTR.base = &raw const GDT as u64;
+
+    asm!("lgdt [{}]", in(reg) &raw const GDT_PTR, options(preserves_flags));
+    asm!(
+        "push 0x08",
+        "lea rax, [rip + 2f]",
+        "push rax",
+        "retfq",
+        "2:",
+        "mov ax, 0x10",
+        "mov ds, ax", "mov es, ax", "mov fs, ax", "mov gs, ax", "mov ss, ax",
+        out("rax") _,
+        options(preserves_flags)
+    );
+    asm!("ltr ax", in("ax") 0x28u16, options(nostack, preserves_flags));
+}
+
+// ── IDT ──────────────────────────────────────────────────────────────────────
+#[repr(C, packed)] #[derive(Clone, Copy)]
+struct IdtE { lo: u16, sel: u16, ist: u8, attr: u8, mi: u16, hi: u32, _z: u32 }
+impl IdtE {
+    const fn null() -> Self { Self { lo:0, sel:0, ist:0, attr:0, mi:0, hi:0, _z:0 } }
+    fn new(h: u64, sel: u16, dpl: u8, ist: u8) -> Self {
+        Self {
+            lo:  (h & 0xFFFF) as u16,
+            mi:  ((h >> 16) & 0xFFFF) as u16,
+            hi:  (h >> 32) as u32,
+            sel, ist,
+            attr: 0x8E | (dpl << 5),
+            _z:  0,
+        }
+    }
+}
+
+#[repr(C, packed)] struct Idtr { lim: u16, base: u64 }
+
+const IDT_LEN: usize = 256;
+static mut IDT:  [IdtE; IDT_LEN] = [IdtE::null(); IDT_LEN];
+static mut IDTR: Idtr             = Idtr { lim: 0, base: 0 };
+
+pub unsafe fn init_idt() {
+    IDT[0x08] = IdtE::new(isr_df  as *const () as u64, 0x08, 0, 1); // #DF IST1
+    IDT[0x0E] = IdtE::new(isr_pf  as *const () as u64, 0x08, 0, 0); // #PF
+    IDT[0x20] = IdtE::new(isr_tmr as *const () as u64, 0x08, 0, 0); // IRQ0 timer
+    IDT[0x21] = IdtE::new(isr_kb  as *const () as u64, 0x08, 0, 0); // IRQ1 keyboard
+    IDT[0x80] = IdtE::new(isr_sys as *const () as u64, 0x08, 3, 0); // int 0x80 syscall
+
+    IDTR.lim  = (core::mem::size_of::<[IdtE; IDT_LEN]>() - 1) as u16;
+    IDTR.base = IDT.as_ptr() as u64;
+    asm!("lidt [{}]", in(reg) &raw const IDTR, options(preserves_flags));
+    asm!("sti", options(nomem, nostack));
+}
+
+// ── PIC ──────────────────────────────────────────────────────────────────────
+pub unsafe fn init_pic() {
+    outb(0x20, 0x11); io_wait(); outb(0xA0, 0x11); io_wait();
+    outb(0x21, 0x20); io_wait(); outb(0xA1, 0x28); io_wait();
+    outb(0x21, 0x04); io_wait(); outb(0xA1, 0x02); io_wait();
+    outb(0x21, 0x01); io_wait(); outb(0xA1, 0x01); io_wait();
+    outb(0x21, 0xFC); outb(0xA1, 0xFF); // maska: włącz IRQ0(timer) + IRQ1(kb)
+}
+
+// ── PIT ──────────────────────────────────────────────────────────────────────
+pub unsafe fn init_pit() {
+    let d = (1193180u32 / 100) as u16; // 100 Hz
+    outb(0x43, 0x36);
+    outb(0x40, (d & 0xFF) as u8);
+    outb(0x40, (d >> 8) as u8);
+    asm!("sti", options(nomem, nostack));
+}
+
+// ── ISR helpers ───────────────────────────────────────────────────────────────
+macro_rules! isr_no_err {
+    ($n:ident, $h:expr) => {
+        #[unsafe(naked)]
+        pub unsafe extern "C" fn $n() {
+            naked_asm!(
+                "push rax","push rbp","push rbx","push rcx","push rdx",
+                "push rsi","push rdi","push r8","push r9","push r10",
+                "push r11","push r12","push r13","push r14","push r15",
+                "mov rdi, rsp", "call {f}",
+                "pop r15","pop r14","pop r13","pop r12","pop r11","pop r10",
+                "pop r9","pop r8","pop rdi","pop rsi","pop rdx","pop rcx",
+                "pop rbx","pop rbp","pop rax","iretq",
+                f = sym $h,
+            );
+        }
+    };
+}
+macro_rules! isr_with_err {
+    ($n:ident, $h:expr) => {
+        #[unsafe(naked)]
+        pub unsafe extern "C" fn $n() {
+            naked_asm!(
+                "xchg rax, [rsp]",
+                "push rbp","push rbx","push rcx","push rdx","push rsi","push rdi",
+                "push r8","push r9","push r10","push r11","push r12","push r13","push r14","push r15",
+                "mov rdi, rsp", "call {f}",
+                "pop r15","pop r14","pop r13","pop r12","pop r11","pop r10","pop r9","pop r8",
+                "pop rdi","pop rsi","pop rdx","pop rcx","pop rbx","pop rbp",
+                "add rsp, 8", "iretq",
+                f = sym $h,
+            );
+        }
+    };
+}
+
+// ── #DF ──────────────────────────────────────────────────────────────────────
+#[unsafe(naked)]
+pub unsafe extern "C" fn isr_df() {
+    naked_asm!(
+        "cli", "add rsp, 8",
+        "mov rdi, rsp", "call {f}",
+        "cli", "hlt",
+        f = sym handle_df
+    );
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn handle_df(f: *mut TF) {
+    let rip = (*f).rip;
+    print_raw("\n");
+    printc("[#DF] DOUBLE FAULT @ RIP=", col::LRED);
+    let mut b = [0u8; 18];
+    print_raw(hex_str(rip, &mut b));
+    print_raw("\n");
+    loop { asm!("hlt", options(nomem, nostack)); }
+}
+
+// ── #PF ──────────────────────────────────────────────────────────────────────
+isr_with_err!(isr_pf, handle_pf);
+
+#[no_mangle]
+pub unsafe extern "C" fn handle_pf(f: *mut TF) {
+    use crate::debug::print;
+    let err  = (*f).rax;
+    let rip  = (*f).rip;
+    let addr: u64;
+    asm!("mov {}, cr2", out(reg) addr, options(nomem, nostack));
+    printc("\n[#PF] PAGE FAULT\n", col::YELLOW);
+    print("  addr="); { let mut b=[0u8;18]; print(hex_str(addr,&mut b)); }
+    print("  err=");  { let mut b=[0u8;18]; print(hex_str(err, &mut b)); }
+    print("  rip=");  { let mut b=[0u8;18]; print(hex_str(rip, &mut b)); }
+    print(if err & 4 != 0 { " USR" } else { " KRN" });
+    print(if err & 2 != 0 { " W\n" } else { " R\n" });
+    crate::panic_no_dyn("Unhandled page fault");
+}
+
+// ── Timer IRQ0 ────────────────────────────────────────────────────────────────
+pub static mut TICK: u64 = 0;
+
+isr_no_err!(isr_tmr, handle_timer);
+
+#[no_mangle]
+pub unsafe extern "C" fn handle_timer(_: *mut TF) {
+    outb(0x20, 0x20); // EOI
+    TICK += 1;
+    schedule();
+}
+
+// ── Keyboard IRQ1 ─────────────────────────────────────────────────────────────
+const SCANMAP_NORM: [char; 59] = [
+    '\0','\x1b','1','2','3','4','5','6','7','8','9','0','-','=','\x08',
+    '\t','q','w','e','r','t','y','u','i','o','p','[',']','\n',
+    '\0','a','s','d','f','g','h','j','k','l',';','\'','`',
+    '\0','\\','z','x','c','v','b','n','m',',','.','/','\0','*','\0',' ','\0',
+];
+const SCANMAP_SHIFT: [char; 59] = [
+    '\0','\x1b','!','@','#','$','%','^','&','*','(',')','_','+','\x08',
+    '\t','Q','W','E','R','T','Y','U','I','O','P','{','}','\n',
+    '\0','A','S','D','F','G','H','J','K','L',':','"','~',
+    '\0','|','Z','X','C','V','B','N','M','<','>','?','\0','*','\0',' ','\0',
+];
+
+const KB_BUF_SIZE: usize = 64;
+static mut KB_BUF:   [char; KB_BUF_SIZE] = ['\0'; KB_BUF_SIZE];
+static mut KB_HEAD:  usize = 0;
+static mut KB_TAIL:  usize = 0;
+static mut KB_SHIFT: bool  = false;
+
+unsafe fn kb_push(c: char) {
+    let next = (KB_HEAD + 1) % KB_BUF_SIZE;
+    if next != KB_TAIL { KB_BUF[KB_HEAD] = c; KB_HEAD = next; }
+}
+
+pub unsafe fn kb_pop() -> Option<char> {
+    if KB_HEAD == KB_TAIL { return None; }
+    let c = KB_BUF[KB_TAIL];
+    KB_TAIL = (KB_TAIL + 1) % KB_BUF_SIZE;
+    Some(c)
+}
+
+isr_no_err!(isr_kb, handle_kb);
+
+#[no_mangle]
+pub unsafe extern "C" fn handle_kb(_: *mut TF) {
+    use crate::debug::inb;
+    let sc = inb(0x60);
+    outb(0x20, 0x20);
+    match sc {
+        0x2A | 0x36 => { KB_SHIFT = true;  return; }
+        0xAA | 0xB6 => { KB_SHIFT = false; return; }
+        _ => {}
+    }
+    if sc & 0x80 != 0 { return; }
+    let idx = sc as usize;
+    if idx < SCANMAP_NORM.len() {
+        let c = if KB_SHIFT { SCANMAP_SHIFT[idx] } else { SCANMAP_NORM[idx] };
+        if c != '\0' { kb_push(c); }
+    }
+}
+
+// ── Syscall int 0x80 ──────────────────────────────────────────────────────────
+isr_no_err!(isr_sys, handle_syscall);
+
+#[no_mangle]
+pub unsafe extern "C" fn handle_syscall(f: *mut TF) {
+    use crate::threading::{THREADS, CUR};
+    use core::sync::atomic::Ordering;
+    use crate::mm::valid_buf;
+    use crate::debug::{putc, VGA_LOCK};
+    use crate::threading::{TS, NTHREADS};
+
+    let tf   = &mut *f;
+    let num  = tf.rax;
+    let a1   = tf.rdi;
+    let a2   = tf.rsi;
+    let a3   = tf.rdx;
+    let p4   = THREADS[CUR.load(Ordering::Relaxed)].cr3;
+
+    tf.rax = match num {
+        // write(fd, buf, len) — fd=1 stdout, fd=2 stderr → VGA
+        1 => {
+            if (a1 == 1 || a1 == 2) && valid_buf(p4, a2, a3 as usize) {
+                let ptr = a2 as *const u8;
+                VGA_LOCK.lock();
+                for i in 0..a3 as usize { putc(*ptr.add(i) as char); }
+                VGA_LOCK.unlock();
+                a3
+            } else { 0 }
+        }
+        // getpid() → 0 placeholder
+        2 => 0,
+        // exit(code)
+        0 => {
+            let c = CUR.load(Ordering::Relaxed);
+            THREADS[c].state = TS::Dead;
+            NTHREADS.fetch_sub(1, Ordering::Relaxed);
+            schedule();
+            0
+        }
+        _ => !0,
+    };
+}
