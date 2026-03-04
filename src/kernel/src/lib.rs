@@ -1,5 +1,6 @@
 // CosinusOS Microkernel v3.5
 // Bazuje na działającym v3.4 + ELF loader z prawdziwym mapowaniem + fix terminala
+// ZMIANA v3.5.1: trampoliny przeniesione do tramp.asm (NASM)
 #![no_std]
 #![no_main]
 #![feature(abi_x86_interrupt)]
@@ -20,6 +21,16 @@ const MAX_THREADS:             usize = 64;
 const KERNEL_STACK_SIZE:       usize = 0x8000;  // 32KB
 const USER_STACK_SIZE:         usize = 0x4000;  // 16KB
 const DOUBLE_FAULT_STACK_SIZE: usize = 0x4000;
+
+// ============================================================================
+// TRAMPOLINY — zdefiniowane w tramp.asm, linkowane zewnętrznie
+// tramp_k: r14=entry, r15=arg
+// tramp_u: r14=entry, r15=arg, r13=user_rsp
+// ============================================================================
+unsafe extern "C" {
+    fn tramp_k();
+    fn tramp_u();
+}
 
 // ============================================================================
 // PORT I/O
@@ -183,7 +194,6 @@ pub unsafe fn mm_init(base: PhysAddr, size: usize) {
     mark_used(0); HINT = 0;
     vprint_c("[PMM] "); pnum_raw(size / 1024 / 1024); vprint_c(" MiB dostepne\n");
 }
-// Wewnętrzna alokacja bez locka (dla użytku gdy MM_LOCK już trzymany)
 unsafe fn mm_alloc_nolock() -> PhysAddr {
     for pass in 0..2 {
         let (s, e) = if pass == 0 { (HINT, FRAME_BM.len()) } else { (0, HINT) };
@@ -219,7 +229,6 @@ unsafe fn mm_cnt(free: bool) -> usize {
     let t = MEM_SIZE / PAGE_SIZE; let mut n = 0;
     for i in 0..t { if is_free(i) == free { n += 1; } } n
 }
-// Pomocnicze print bez locka dla mm_init
 unsafe fn vprint_c(s: &str) { for c in s.chars() { putc(c); } }
 unsafe fn pnum_raw(mut v: usize) {
     if v == 0 { putc('0'); return; }
@@ -243,36 +252,29 @@ fn pa(e: u64) -> PhysAddr { e & PTE_ADDR }
 
 #[repr(C, align(4096))] struct PT { e: [u64; 512] }
 unsafe fn pt(p: PhysAddr) -> *mut PT { p as *mut PT }
-// zpg bez locka - dla użytku wewnątrz vmap/vunmap (które trzymają MM_LOCK)
 unsafe fn zpg() -> PhysAddr {
     let p = mm_alloc_nolock();
     core::ptr::write_bytes(p as *mut u8, 0, PAGE_SIZE);
     p
 }
-// zpg z lockiem - dla użytku na zewnątrz (new_user_p4 itp.)
 unsafe fn zpg_locked() -> PhysAddr {
     let p = mm_alloc();
     core::ptr::write_bytes(p as *mut u8, 0, PAGE_SIZE);
     p
 }
-// Pobierz lub utwórz entry w tablicy stron
 unsafe fn goc(tab: PhysAddr, idx: usize, flags: u64) -> PhysAddr {
     let t = &mut *pt(tab);
     if !pe(t.e[idx]) {
-        // Brak wpisu - alokuj nową tablicę
         let c = zpg(); t.e[idx] = pte(c, flags);
     } else if t.e[idx] & (1 << 7) != 0 {
-        // PS bit (bit 7) = huge page (2MB) - rozkładamy na 512 × 4KB
-        let huge_phys = t.e[idx] & 0x000F_FFFF_FFE0_0000; // adres bazowy 2MB
-        let c = zpg(); // nowa P1 tablica (już wyzerowana przez zpg)
+        let huge_phys = t.e[idx] & 0x000F_FFFF_FFE0_0000;
+        let c = zpg();
         let p1 = &mut *pt(c);
         for j in 0..512usize {
             let phys = huge_phys + j as u64 * PAGE_SIZE as u64;
             p1.e[j] = pte(phys, PTE_W);
         }
-        t.e[idx] = pte(c, flags); // podmień: huge page → P1 pointer
-        // KRYTYCZNE: flush całego TLB przez reload CR3
-        // (invlpg nie wystarczy bo stary huge page mógł być w TLB)
+        t.e[idx] = pte(c, flags);
         let cr3: u64;
         asm!("mov {}, cr3", out(reg) cr3, options(nomem, nostack));
         asm!("mov cr3, {}", in(reg) cr3, options(nostack));
@@ -281,20 +283,14 @@ unsafe fn goc(tab: PhysAddr, idx: usize, flags: u64) -> PhysAddr {
 }
 unsafe fn pt_empty(p: PhysAddr) -> bool { (*pt(p)).e.iter().all(|&e| e == 0) }
 
-static mut K_P4:    PhysAddr = 0;
-static mut US_ENTRY: VirtAddr = 0; // entry point userspace (dla komendy 'userspace')
+static mut K_P4:     PhysAddr = 0;
+static mut US_ENTRY: VirtAddr = 0;
 
 pub unsafe fn vmm_init(boot_cr3: PhysAddr) {
-    // Tworzymy nowy P4 jako kopię boot P4
-    // Kopiujemy wszystkie 512 wpisów 1:1 (zachowując PS/huge bity)
-    // Nowy P4 wskazuje na te same P3/P2 co boot P4
-    // Dzięki temu goc() może bezpiecznie modyfikować wpisy
-    // nie dotykając oryginalnych boot struktur
     let new_p4 = zpg_locked();
     let boot = &*pt(boot_cr3);
     let new  = &mut *pt(new_p4);
     for i in 0..512 { new.e[i] = boot.e[i]; }
-    // Przełącz na nowy P4
     core::arch::asm!("mov cr3, {}", in(reg) new_p4, options(nostack));
     K_P4 = new_p4;
 }
@@ -329,7 +325,6 @@ pub unsafe fn vunmap(p4: PhysAddr, v: VirtAddr) {
     MM_LOCK.unlock();
 }
 
-// Przetłumacz virt → phys w przestrzeni adresowej p4
 pub unsafe fn virt_to_phys(p4: PhysAddr, v: VirtAddr) -> Option<PhysAddr> {
     if p4 == 0 { return None; }
     macro_rules! walk { ($tab:expr, $idx:expr) => {{
@@ -363,10 +358,6 @@ pub unsafe fn valid_buf(p4: PhysAddr, ptr: VirtAddr, len: usize) -> bool {
     true
 }
 pub unsafe fn new_user_p4() -> PhysAddr {
-    // Kopiuj CAŁY P4 (wszystkie 512 wpisów)
-    // Kernel code/stack/data jest pod 0x101000 = P4[0] więc musimy
-    // mieć P4[0..255] tak samo jak K_P4
-    // Izolacja user/kernel przez prawa dostępu (PTE_U), nie przez osobne P4
     let n = zpg_locked();
     let src = &*pt(K_P4); let dst = &mut *pt(n);
     for i in 0..512 { dst.e[i] = src.e[i]; }
@@ -476,13 +467,12 @@ unsafe fn init_pic() {
     outb(0x21, 0x20); io_wait(); outb(0xA1, 0x28); io_wait();
     outb(0x21, 0x04); io_wait(); outb(0xA1, 0x02); io_wait();
     outb(0x21, 0x01); io_wait(); outb(0xA1, 0x01); io_wait();
-    // 0xFC = 1111_1100 → IRQ0 timer + IRQ1 keyboard odmaskowane
     outb(0x21, 0xFC); outb(0xA1, 0xFF);
 }
 unsafe fn init_pit() {
     let d = (1193180u32 / 100) as u16;
     outb(0x43, 0x36); outb(0x40, (d & 0xFF) as u8); outb(0x40, (d >> 8) as u8);
-    asm!("sti", options(nomem, nostack)); // Włącz przerwania - od teraz timer działa
+    asm!("sti", options(nomem, nostack));
 }
 
 // ============================================================================
@@ -521,7 +511,6 @@ macro_rules! isr_with_err {
     };
 }
 
-// Double Fault — IST1
 #[unsafe(naked)]
 unsafe extern "C" fn isr_df() {
     naked_asm!("cli","add rsp,8","mov rdi,rsp","call {f}","cli","hlt",f=sym handle_df);
@@ -550,7 +539,7 @@ isr_no_err!(isr_tmr, handle_timer);
 #[no_mangle] unsafe extern "C" fn handle_timer(_: *mut TF) { outb(0x20, 0x20); TICK += 1; schedule(); }
 
 // ============================================================================
-// KLAWIATURA PS/2 — interrupt-driven IRQ1
+// KLAWIATURA PS/2
 // ============================================================================
 const SCANMAP_NORM: [char; 59] = [
     '\0','\x1b','1','2','3','4','5','6','7','8','9','0','-','=','\x08',
@@ -583,14 +572,14 @@ pub unsafe fn kb_pop() -> Option<char> {
 
 isr_no_err!(isr_kb, handle_kb);
 #[no_mangle] unsafe extern "C" fn handle_kb(_: *mut TF) {
-    let sc = inb(0x60); // MUSI być odczytany żeby odblokować kontroler
-    outb(0x20, 0x20);   // EOI dla IRQ1
+    let sc = inb(0x60);
+    outb(0x20, 0x20);
     match sc {
         0x2A | 0x36 => { KB_SHIFT = true;  return; }
         0xAA | 0xB6 => { KB_SHIFT = false; return; }
         _ => {}
     }
-    if sc & 0x80 != 0 { return; } // key release
+    if sc & 0x80 != 0 { return; }
     let idx = sc as usize;
     if idx < SCANMAP_NORM.len() {
         let c = if KB_SHIFT { SCANMAP_SHIFT[idx] } else { SCANMAP_NORM[idx] };
@@ -607,7 +596,7 @@ isr_no_err!(isr_sys, handle_syscall);
     let num = tf.rax; let a1 = tf.rdi; let a2 = tf.rsi; let a3 = tf.rdx;
     let p4  = THREADS[CUR.load(Ordering::Relaxed)].cr3;
     tf.rax = match num {
-        1 => { // write(fd, buf, len)
+        1 => {
             if a1 == 1 || a1 == 2 {
                 if !valid_buf(p4, a2, a3 as usize) { !0 } else {
                     let ptr = a2 as *const u8;
@@ -618,8 +607,8 @@ isr_no_err!(isr_sys, handle_syscall);
                 }
             } else { 0 }
         }
-        2  => 0, // read — stub
-        0  => {  // exit
+        2  => 0,
+        0  => {
             let c = CUR.load(Ordering::Relaxed);
             THREADS[c].state = TS::Dead;
             NTHREADS.fetch_sub(1, Ordering::Relaxed);
@@ -655,9 +644,8 @@ pub unsafe fn sched_init() {
     if tid >= 0 { THREADS[tid as usize].state = TS::Run; CUR.store(tid as usize, Ordering::SeqCst); }
 }
 
-// Wątek kernelowy (działa z K_P4)
 pub unsafe fn spawn_k(name: &str, entry: u64, arg: u64) -> i32 {
-    asm!("cli", options(nomem, nostack)); // Nie pozwól timerowi przerwać tworzenia wątku
+    asm!("cli", options(nomem, nostack));
     for i in 0..MAX_THREADS {
         if THREADS[i].state != TS::Dead { continue; }
         let t = &mut THREADS[i];
@@ -671,29 +659,26 @@ pub unsafe fn spawn_k(name: &str, entry: u64, arg: u64) -> i32 {
         init_thread_stack(t, kt, kt, entry, arg, false);
         set_name(t, name);
         NTHREADS.fetch_add(1, Ordering::Relaxed);
-        t.state = TS::Ready; // OSTATNI - bezpieczne dla schedulera
+        t.state = TS::Ready;
         let mut buf = [0u8; 24];
         print("  [T#"); print(num_str(i, &mut buf)); print("] "); print(name); print("\n");
         return i as i32;
     }
     -1
 }
-init_thread_stack(t, kt, ut, entry, arg, true);
 
-
-// Wątek userspace w istniejącej przestrzeni adresowej cr3
 pub unsafe fn spawn_user_on_cr3(name: &str, entry: u64, arg: u64, cr3: PhysAddr) -> i32 {
     asm!("cli", options(nomem, nostack));
     for i in 0..MAX_THREADS {
         if THREADS[i].state != TS::Dead { continue; }
         let t = &mut THREADS[i];
-        // Kernel stack (mapowany w K_P4)
+        // Kernel stack
         let ks = 0x0200_0000u64 + i as u64 * (KERNEL_STACK_SIZE + PAGE_SIZE) as u64 + PAGE_SIZE as u64;
         for p in 0..(KERNEL_STACK_SIZE / PAGE_SIZE) {
             vmap(K_P4, ks + p as u64 * PAGE_SIZE as u64, mm_alloc(), PTE_W);
         }
         let kt = ks + KERNEL_STACK_SIZE as u64;
-        // User stack (mapowany w cr3)
+        // User stack
         let us = 0x0400_0000u64 + i as u64 * (USER_STACK_SIZE + PAGE_SIZE) as u64 + PAGE_SIZE as u64;
         for p in 0..(USER_STACK_SIZE / PAGE_SIZE) {
             vmap(cr3, us + p as u64 * PAGE_SIZE as u64, mm_alloc(), PTE_W | PTE_U);
@@ -702,134 +687,79 @@ pub unsafe fn spawn_user_on_cr3(name: &str, entry: u64, arg: u64, cr3: PhysAddr)
         t.id = i as u32; t.prio = 5;
         t.ktop = kt; t.utop = ut; t.cr3 = cr3; t.ticks = 0;
         init_thread_stack(t, kt, ut, entry, arg, true);
-        // DEBUG: sprawdz co jest na stosie
-        let ksp = t.krsp;
-        let stack_entry = *(ksp as *const u64);           // rbx
-        let stack_rbp   = *((ksp+8) as *const u64);       // rbp  
-        let stack_r12   = *((ksp+16) as *const u64);      // r12
-        let stack_r13   = *((ksp+24) as *const u64);      // r13 = ut
-        let stack_r14   = *((ksp+32) as *const u64);      // r14 = entry
-        let stack_r15   = *((ksp+40) as *const u64);      // r15 = arg
-        let stack_tramp = *((ksp+48) as *const u64);        // tramp_u
+
         // DEBUG via serial
         {
+            let ksp = t.krsp;
+            let stack_r14   = *((ksp+32) as *const u64); // entry
+            let stack_r13   = *((ksp+24) as *const u64); // ut
+            let stack_tramp = *((ksp+48) as *const u64); // tramp_u
+            let expected_tramp = tramp_u as *const () as u64;
             let mut b = [0u8; 18];
-            serial_print("[DBG] krsp="); serial_print(hex_str(ksp, &mut b));
-            serial_print(" kt="); serial_print(hex_str(kt, &mut b));
+            serial_print("[DBG] krsp=");   serial_print(hex_str(ksp, &mut b));
+            serial_print(" kt=");          serial_print(hex_str(kt, &mut b));
             serial_print("\n");
             serial_print("[DBG] r14(entry)="); serial_print(hex_str(stack_r14, &mut b));
-            serial_print(" r13(ut)="); serial_print(hex_str(stack_r13, &mut b));
+            serial_print(" r13(ut)=");     serial_print(hex_str(stack_r13, &mut b));
             serial_print("\n");
-            serial_print("[DBG] tramp="); serial_print(hex_str(stack_tramp, &mut b));
-            serial_print(" expected_tramp=");
-            let eu = tramp_u as *const () as u64;
-            serial_print(hex_str(eu, &mut b));
-            serial_print("\n");
+            serial_print("[DBG] tramp=");  serial_print(hex_str(stack_tramp, &mut b));
+            serial_print(" expected=");    serial_print(hex_str(expected_tramp, &mut b));
+            serial_print(if stack_tramp == expected_tramp { " OK\n" } else { " MISMATCH!\n" });
         }
-        let _ = (stack_entry, stack_rbp, stack_r12);
+
         set_name(t, name);
-        t.state = TS::Ready; // OSTATNI
+        t.state = TS::Ready;
         NTHREADS.fetch_add(1, Ordering::Relaxed);
         let mut buf = [0u8; 24];
         print("  [T#"); print(num_str(i, &mut buf)); print("] "); print(name); print("\n");
         return i as i32;
     }
-    
     -1
-
 }
 
-// Inicjalizacja stosu wątku tak żeby pasowało do thread_switch
-// thread_switch pobiera: pop r15,r14,r13,r12,rbp,rbx, ret
-// Więc na stosie musi być (od najniższego adresu):
-//   rbx=0, rbp=0, r12=0, r13=utop, r14=entry, r15=arg, [ret=trampoline]
-// ============================================================
-// POZIOM MODUŁU (src/lib.rs, poza jakąkolwiek funkcją)
-// ============================================================
-
-// 1. global_asm! - NIE potrzebuje unsafe, może być globalnie
-core::arch::global_asm!(
-    ".section .data",
-    ".p2align 3",
-    ".global TRAMP_U_ADDR",
-    ".global TRAMP_K_ADDR",
-    "TRAMP_U_ADDR:",
-    ".quad tramp_u",
-    "TRAMP_K_ADDR:",
-    ".quad tramp_k",
-    ".section .text",
-);
-// 2. Deklaracje extern static - też na poziomie modułu
-extern "C" {
-    pub static TRAMP_U_ADDR: u64;
-    pub static TRAMP_K_ADDR: u64;
-}
-
-// ============================================================
-// DEFINICJA FUNKCJI (również na poziomie modułu, NIE w unsafe!)
-// ============================================================
-
+// Inicjalizacja stosu wątku dla thread_switch:
+//   thread_switch: pop r15, pop r14, pop r13, pop r12, pop rbp, pop rbx, ret
+//
+// Layout stosu kernelowego (ksp rośnie w górę, push odkłada w dół):
+//   [ksp+48] = tramp_addr   ← "ret" skoczy tutaj
+//   [ksp+40] = arg          → r15
+//   [ksp+32] = entry        → r14
+//   [ksp+24] = ut           → r13
+//   [ksp+16] = 0            → r12
+//   [ksp+8 ] = 0            → rbp
+//   [ksp+0 ] = 0            → rbx   ← t.krsp wskazuje tutaj
 fn init_thread_stack(t: &mut Thread, kt: VirtAddr, ut: VirtAddr, entry: u64, arg: u64, user: bool) {
+    // Rzutowanie fn ptr → u64: deterministyczne, rozwiązywane przez linker
+    // Nie używamy inline asm (lea z RIP-relative może dać 0x0 w no_std bare metal)
+    let tramp_addr: u64 = if user {
+        tramp_u as *const () as u64
+    } else {
+        tramp_k as *const () as u64
+    };
+
     let mut ksp = kt;
-    // Pobierz adres trampoliny przez asm sym - jedyna metoda pewna w no_std
-    let tramp_addr: u64;
     unsafe {
-        if user {
-            core::arch::asm!(
-                "lea {out}, [{sym}]",
-                out = out(reg) tramp_addr,
-                sym = sym tramp_u,
-                options(nostack, nomem, pure),
-            );
-        } else {
-            core::arch::asm!(
-                "lea {out}, [{sym}]",
-                out = out(reg) tramp_addr,
-                sym = sym tramp_k,
-                options(nostack, nomem, pure),
-            );
-        }
-        ksp -= 8; *(ksp as *mut u64) = tramp_addr;
-        ksp -= 8; *(ksp as *mut u64) = arg;
-        ksp -= 8; *(ksp as *mut u64) = entry;
-        ksp -= 8; *(ksp as *mut u64) = ut;
-        ksp -= 8; *(ksp as *mut u64) = 0u64;
-        ksp -= 8; *(ksp as *mut u64) = 0u64;
-        ksp -= 8; *(ksp as *mut u64) = 0u64;
+        ksp -= 8; *(ksp as *mut u64) = tramp_addr; // ret → trampoline
+        ksp -= 8; *(ksp as *mut u64) = arg;         // r15
+        ksp -= 8; *(ksp as *mut u64) = entry;       // r14
+        ksp -= 8; *(ksp as *mut u64) = ut;          // r13
+        ksp -= 8; *(ksp as *mut u64) = 0u64;        // r12
+        ksp -= 8; *(ksp as *mut u64) = 0u64;        // rbp
+        ksp -= 8; *(ksp as *mut u64) = 0u64;        // rbx
     }
     t.krsp = ksp;
-    // Weryfikacja - wydrukuj co faktycznie jest na stosie
+
     unsafe {
         let tramp_on_stack = *((ksp + 48) as *const u64);
         if tramp_on_stack != tramp_addr {
-            // Stos zapisany źle - ksp się nie zmienił!
-            serial_print("[FATAL] stos zepsuly! tramp_on_stack != tramp_addr\n");
+            serial_print("[FATAL] init_thread_stack: tramp na stosie != tramp_addr!\n");
         }
     }
 }
+
 unsafe fn set_name(t: &mut Thread, name: &str) {
     let b = name.as_bytes();
     for j in 0..core::cmp::min(15, b.len()) { t.name[j] = b[j]; }
-}
-
-// tramp_k: r15=arg, r14=entry
-#[no_mangle]
-#[unsafe(naked)] unsafe extern "C" fn tramp_k() {
-    naked_asm!("mov rdi,r15", "call r14", "cli", "hlt");
-}
-// tramp_u: r15=arg, r14=entry, r13=user_rsp
-#[no_mangle]
-#[unsafe(naked)] unsafe extern "C" fn tramp_u() {
-    naked_asm!(
-        "cli",                          // żadnych przerwań podczas budowania fake-iretq frame
-        "push 0x20|3",                  // SS  = 0x23 (user data)
-        "push r13",                     // RSP = user stack top
-        "push 0x202",                   // RFLAGS = IF=1
-        "push 0x18|3",                  // CS  = 0x1B (user code)
-        "push r14",                     // RIP = entry
-        "mov rdi,r15",                  // arg → rdi
-        "iretq",
-    );
 }
 
 pub unsafe fn schedule() {
@@ -868,8 +798,6 @@ unsafe extern "C" fn idle(_: u64) -> ! {
     loop { asm!("hlt", options(nomem, nostack)); }
 }
 
-// Yield — oddaj CPU. Nie używamy int 0x20 (brak EOI).
-// schedule() samo sprawdza czy jest co przełączyć.
 pub unsafe fn thread_yield() {
     schedule();
 }
@@ -898,30 +826,24 @@ pub unsafe fn mb2_module(info: u64) -> Option<(u64, u64)> {
 }
 
 // ============================================================================
-// USERSPACE LOADER — właściwy ELF64 loader z izolowaną przestrzenią adresową
+// USERSPACE LOADER
 // ============================================================================
-
 pub unsafe fn load_userspace(mod_start: u64, mod_end: u64) -> bool {
     if mod_end <= mod_start { return false; }
 
-    // IDENTITY MAP: boot.asm mapuje pierwsze 2GB phys==virt
-    // mod_start jest < 16MB więc dostępny bezpośrednio jako pointer
     let mod_sz = (mod_end - mod_start) as usize;
     let elf    = mod_start as *const u8;
-
-    let magic = *(elf as *const u32);
+    let magic  = *(elf as *const u32);
 
     if magic != 0x464C457F {
-        // ── FLAT BINARY ─────────────────────────────────────────────────────
-        printc("[US] Raw binary
-", col::LCYAN);
+        // FLAT BINARY
+        printc("[US] Raw binary\n", col::LCYAN);
         let cr3   = new_user_p4();
         const BIN_BASE: u64 = 0x0040_0000;
         let pages = (mod_sz + PAGE_SIZE - 1) / PAGE_SIZE;
         for i in 0..pages {
             let phys = mm_alloc();
             vmap(cr3, BIN_BASE + i as u64 * PAGE_SIZE as u64, phys, PTE_W | PTE_U);
-            // Identity map: phys jest dostępne jako virt (phys < 256MB)
             let dst = phys as *mut u8;
             let src = mod_start as *const u8;
             let n   = core::cmp::min(PAGE_SIZE, mod_sz - i * PAGE_SIZE);
@@ -929,35 +851,32 @@ pub unsafe fn load_userspace(mod_start: u64, mod_end: u64) -> bool {
             if n < PAGE_SIZE { core::ptr::write_bytes(dst.add(n), 0, PAGE_SIZE - n); }
         }
         US_ENTRY = BIN_BASE;
-        printc("[US] Flat binary @ ", col::LCYAN); phex!(BIN_BASE); print("");
+        printc("[US] Flat binary @ ", col::LCYAN); phex!(BIN_BASE); print("\n");
         let tid = spawn_user_on_cr3("userspace", BIN_BASE, 0, cr3);
-        if tid >= 0 { printc("[US] Watek #", col::LGREEN); pnum!(tid); print(" OK"); return true; }
-        else        { printc("[US] Brak slotow!", col::LRED); return false; }
+        if tid >= 0 { printc("[US] Watek #", col::LGREEN); pnum!(tid); print(" OK\n"); return true; }
+        else        { printc("[US] Brak slotow!\n", col::LRED); return false; }
     }
 
-    // ── ELF64 ───────────────────────────────────────────────────────────────
+    // ELF64
     let e_type      = *(elf.add(0x10) as *const u16);
     let e_entry_raw = *(elf.add(0x18) as *const u64);
     let e_phoff     = *(elf.add(0x20) as *const u64);
     let e_phentsize = *(elf.add(0x36) as *const u16) as usize;
-    // ET_DYN (PIE): vaddr w segmentach są relative do 0, dodajemy LOAD_BASE
-    // ET_EXEC: vaddr są absolutne, LOAD_BASE = 0
-    let load_base: u64 = if e_type == 3 { 0x0040_0000u64 } else { 0u64 }; // ET_DYN=3 → PIE
-    let e_entry = load_base + e_entry_raw;
+    let load_base: u64 = if e_type == 3 { 0x0040_0000u64 } else { 0u64 };
+    let e_entry     = load_base + e_entry_raw;
     let e_phnum     = *(elf.add(0x38) as *const u16) as usize;
 
     printc("[US] ELF64 ", col::LCYAN);
     if e_type == 2 { print("ET_EXEC"); } else { print("ET_DYN"); }
     print(" entry="); phex!(e_entry);
-    print(" phnum="); let mut nb=[0u8;24]; print(num_str(e_phnum,&mut nb)); print("
-");
+    print(" phnum="); let mut nb=[0u8;24]; print(num_str(e_phnum,&mut nb)); print("\n");
 
     let cr3 = new_user_p4();
 
     for i in 0..e_phnum {
         let ph       = elf.add(e_phoff as usize + i * e_phentsize);
         let p_type   = *(ph as *const u32);
-        if p_type != 1 { continue; }  // tylko PT_LOAD
+        if p_type != 1 { continue; }
 
         let p_flags  = *(ph.add(0x04) as *const u32);
         let p_offset = *(ph.add(0x08) as *const u64);
@@ -965,9 +884,7 @@ pub unsafe fn load_userspace(mod_start: u64, mod_end: u64) -> bool {
         let p_filesz = *(ph.add(0x20) as *const u64);
         let p_memsz  = *(ph.add(0x28) as *const u64);
         if p_memsz == 0 { continue; }
-        // Ogranicz memsz do rozsądnej wartości (max 2MB per segment)
-        // ET_DYN Rust binary może mieć ogromny BSS z powodu statycznego stosu
-        let p_memsz = core::cmp::min(p_memsz, 2 * 1024 * 1024);
+        let p_memsz  = core::cmp::min(p_memsz, 2 * 1024 * 1024);
 
         let mut perm = PTE_U;
         if p_flags & 0x2 != 0 { perm |= PTE_W; }
@@ -980,19 +897,14 @@ pub unsafe fn load_userspace(mod_start: u64, mod_end: u64) -> bool {
             let phys = mm_alloc();
             vmap(cr3, vaddr, phys, perm);
 
-            // Identity map: zapisuj bezpośrednio przez adres fizyczny
             let dst = phys as *mut u8;
-            core::ptr::write_bytes(dst, 0, PAGE_SIZE); // wyzeruj (dla BSS)
+            core::ptr::write_bytes(dst, 0, PAGE_SIZE);
 
-            // Skopiuj dane z pliku ELF jeśli ta strona ma dane
-            let vaddr_rel = vaddr - load_base; // vaddr w przestrzeni pliku ELF
-            let page_off = if vaddr_rel >= p_vaddr { vaddr_rel - p_vaddr } else { 0 };
+            let vaddr_rel = vaddr - load_base;
+            let page_off  = if vaddr_rel >= p_vaddr { vaddr_rel - p_vaddr } else { 0 };
             if page_off < p_filesz {
                 let file_off = p_offset + page_off;
-                let copy_n   = core::cmp::min(
-                    PAGE_SIZE as u64,
-                    p_filesz - page_off
-                ) as usize;
+                let copy_n   = core::cmp::min(PAGE_SIZE as u64, p_filesz - page_off) as usize;
                 let src_ptr  = elf.add(file_off as usize);
                 let dst_off  = if vaddr < p_vaddr { (p_vaddr - vaddr) as usize } else { 0 };
                 core::ptr::copy_nonoverlapping(src_ptr, dst.add(dst_off), copy_n);
@@ -1003,18 +915,15 @@ pub unsafe fn load_userspace(mod_start: u64, mod_end: u64) -> bool {
         let mut buf = [0u8; 24];
         print("  [SEG] vaddr="); phex!(p_vaddr);
         print(" filesz="); print(num_str(p_filesz as usize, &mut buf));
-        print(" memsz=");  print(num_str(p_memsz  as usize, &mut buf)); print("
-");
+        print(" memsz=");  print(num_str(p_memsz  as usize, &mut buf)); print("\n");
     }
 
     US_ENTRY = e_entry;
     let tid = spawn_user_on_cr3("userspace", e_entry, 0, cr3);
     if tid >= 0 {
-        printc("[US] Watek #", col::LGREEN); pnum!(tid); print(" OK
-"); true
+        printc("[US] Watek #", col::LGREEN); pnum!(tid); print(" OK\n"); true
     } else {
-        printc("[US] Brak slotow!
-", col::LRED); false
+        printc("[US] Brak slotow!\n", col::LRED); false
     }
 }
 
@@ -1147,21 +1056,15 @@ unsafe fn term_handle_char(c: char) {
     }
 }
 
-// Wątek terminala — FIX: używa thread_yield() zamiast spin_loop()
-// żeby scheduler mógł normalnie działać między tickami
 unsafe extern "C" fn kernel_terminal(_: u64) -> ! {
     printc("\n=== CosinusOS Kernel Terminal ===\n", col::YELLOW);
     print("  Klawiatura PS/2 + COM1 (115200). Wpisz 'help'.\n");
     term_prompt();
     loop {
         let mut got = false;
-        while let Some(c) = kb_pop()  { term_handle_char(c); got = true; }
+        while let Some(c) = kb_pop()   { term_handle_char(c); got = true; }
         while let Some(c) = com_read() { com_write(c); term_handle_char(c); got = true; }
-        if !got {
-            // Brak inputu — oddaj CPU przez schedule()
-            // Nie spin_loop (zjada 100% CPU i blokuje inne wątki)
-            thread_yield();
-        }
+        if !got { thread_yield(); }
     }
 }
 
@@ -1208,7 +1111,7 @@ pub extern "C" fn kernel_main(mb_magic: u64, mb_info: u64) -> ! {
         set_col(col::WHITE);
         serial_print("=== CosinusOS v3.5 boot ===\n");
 
-        mm_init(0x0100_0000, 0x0F00_0000); // 16MB–256MB = ~240MB
+        mm_init(0x0100_0000, 0x0F00_0000);
         vmm_init(0x1000);
         log_ok("PMM + VMM", true);
 
@@ -1216,11 +1119,8 @@ pub extern "C" fn kernel_main(mb_magic: u64, mb_info: u64) -> ! {
         init_pic(); log_ok("PIC", true);
         init_idt(); log_ok("IDT + IRQ1 keyboard", true);
 
-        // Scheduler PRZED PIT — wątki muszą istnieć zanim przyjdzie timer
         sched_init(); log_ok("Scheduler (idle thread)", true);
-
-        // PIT ostatni — od teraz przychodzą przerwania timera
-        init_pit(); log_ok("PIT 100Hz", true);
+        init_pit();   log_ok("PIT 100Hz", true);
 
         print("\n");
         printc("=== Userspace ===\n", col::YELLOW);

@@ -3,6 +3,19 @@ const std = @import("std");
 pub fn build(b: *std.Build) void {
     const build_dir = "../../build";
 
+    // Kompiluj boot.asm
+    const nasm_boot = b.addSystemCommand(&.{
+        "nasm",           "-f", "elf64",
+        "../../boot.asm", "-o", build_dir ++ "/boot.o",
+    });
+
+    // Kompiluj tramp.asm — plik jest w src/tramp.asm
+    const nasm_tramp = b.addSystemCommand(&.{
+        "nasm",          "-f", "elf64",
+        "src/tramp.asm", "-o", build_dir ++ "/tramp.o",
+    });
+
+    // Buduj kernel Rust
     const cargo_kernel = b.addSystemCommand(&.{
         "cargo",                       "+nightly",                                 "build",
         "--release",                   "--manifest-path",                          "Cargo.toml",
@@ -12,21 +25,28 @@ pub fn build(b: *std.Build) void {
         build_dir ++ "/kernel_target",
     });
 
-    const nasm_boot = b.addSystemCommand(&.{
-        "nasm",           "-f", "elf64",                "-w+all", "-Wno-deprecated",
-        "../../boot.asm", "-o", build_dir ++ "/boot.o",
-    });
-
+    // Linkuj: boot.o + tramp.o + libkernel.a
     const link_kernel = b.addSystemCommand(&.{
-        "ld",                                                                  "-T",                       "linker.ld",
-        "-nostdlib",                                                           "-static",                  "-no-pie",
-        "--no-warn-rwx-segments",                                              "-z",                       "noexecstack",
-        "-o",                                                                  build_dir ++ "/kernel.elf", build_dir ++ "/boot.o",
-        build_dir ++ "/kernel_target/x86_64-unknown-none/release/libkernel.a",
+        "ld",
+        "-T",
+        "linker.ld",
+        "-nostdlib",
+        "-static",
+        "-no-pie",
+        "--no-warn-rwx-segments",
+        "-z",
+        "noexecstack",
+        "-o",
+        build_dir ++ "/kernel.elf",
+        build_dir ++ "/boot.o",
+        build_dir ++ "/tramp.o",
+        build_dir ++ "/kernel_target/x86_64-cosinus/release/libkernel.a",
     });
     link_kernel.step.dependOn(&cargo_kernel.step);
     link_kernel.step.dependOn(&nasm_boot.step);
+    link_kernel.step.dependOn(&nasm_tramp.step);
 
+    // Skopiuj do iso
     const copy_to_iso = b.addSystemCommand(&.{
         "sh", "-c",
         "mkdir -p ../../iso/boot && cp " ++
@@ -36,11 +56,12 @@ pub fn build(b: *std.Build) void {
 
     b.default_step.dependOn(&copy_to_iso.step);
 
+    // Clean
     const clean = b.step("clean", "Clean kernel");
     const clean_cmd = b.addSystemCommand(&.{
-        "rm",                          "-rf",
-        build_dir ++ "/boot.o",        build_dir ++ "/kernel.elf",
-        build_dir ++ "/kernel_target",
+        "rm",                       "-rf",
+        build_dir ++ "/boot.o",     build_dir ++ "/tramp.o",
+        build_dir ++ "/kernel.elf", build_dir ++ "/kernel_target",
     });
     clean.dependOn(&clean_cmd.step);
 }
