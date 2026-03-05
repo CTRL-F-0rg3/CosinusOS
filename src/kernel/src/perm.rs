@@ -2,7 +2,7 @@
 // Struktury CPU: GDT, TSS, IDT, PIC, PIT, ISR
 
 use core::arch::{asm, naked_asm};
-use crate::debug::{col, outb, io_wait, print_raw, printc, hex_str};
+use crate::debug::{col, outb, io_wait, print_raw, printc, hex_str, print};
 use crate::mm::VirtAddr;
 use crate::threading::schedule;
 
@@ -122,6 +122,7 @@ static mut IDTR: Idtr             = Idtr { lim: 0, base: 0 };
 
 pub unsafe fn init_idt() {
     IDT[0x08] = IdtE::new(isr_df  as *const () as u64, 0x08, 0, 1); // #DF IST1
+    IDT[0x0D] = IdtE::new(isr_gp  as *const () as u64, 0x08, 0, 0); // #GP
     IDT[0x0E] = IdtE::new(isr_pf  as *const () as u64, 0x08, 0, 0); // #PF
     IDT[0x20] = IdtE::new(isr_tmr as *const () as u64, 0x08, 0, 0); // IRQ0 timer
     IDT[0x21] = IdtE::new(isr_kb  as *const () as u64, 0x08, 0, 0); // IRQ1 keyboard
@@ -139,12 +140,12 @@ pub unsafe fn init_pic() {
     outb(0x21, 0x20); io_wait(); outb(0xA1, 0x28); io_wait();
     outb(0x21, 0x04); io_wait(); outb(0xA1, 0x02); io_wait();
     outb(0x21, 0x01); io_wait(); outb(0xA1, 0x01); io_wait();
-    outb(0x21, 0xFC); outb(0xA1, 0xFF); // maska: włącz IRQ0(timer) + IRQ1(kb)
+    outb(0x21, 0xFC); outb(0xA1, 0xFF);
 }
 
 // ── PIT ──────────────────────────────────────────────────────────────────────
 pub unsafe fn init_pit() {
-    let d = (1193180u32 / 100) as u16; // 100 Hz
+    let d = (1193180u32 / 100) as u16;
     outb(0x43, 0x36);
     outb(0x40, (d & 0xFF) as u8);
     outb(0x40, (d >> 8) as u8);
@@ -191,8 +192,13 @@ macro_rules! isr_with_err {
 #[unsafe(naked)]
 pub unsafe extern "C" fn isr_df() {
     naked_asm!(
-        "cli", "add rsp, 8",
-        "mov rdi, rsp", "call {f}",
+        "cli",
+        "add rsp, 8",
+        "push rax","push rbp","push rbx","push rcx","push rdx",
+        "push rsi","push rdi","push r8","push r9","push r10",
+        "push r11","push r12","push r13","push r14","push r15",
+        "mov rdi, rsp",
+        "call {f}",
         "cli", "hlt",
         f = sym handle_df
     );
@@ -200,13 +206,33 @@ pub unsafe extern "C" fn isr_df() {
 
 #[no_mangle]
 pub unsafe extern "C" fn handle_df(f: *mut TF) {
-    let rip = (*f).rip;
-    print_raw("\n");
-    printc("[#DF] DOUBLE FAULT @ RIP=", col::LRED);
-    let mut b = [0u8; 18];
-    print_raw(hex_str(rip, &mut b));
+    let cr2: u64;
+    asm!("mov {}, cr2", out(reg) cr2, options(nomem, nostack));
+    print_raw("\n[#DF] DOUBLE FAULT\n");
+    print_raw("  RIP="); { let mut b=[0u8;18]; print_raw(hex_str((*f).rip,    &mut b)); }
+    print_raw("  RSP="); { let mut b=[0u8;18]; print_raw(hex_str((*f).rsp,    &mut b)); }
+    print_raw("  CR2="); { let mut b=[0u8;18]; print_raw(hex_str(cr2,          &mut b)); }
+    print_raw("   CS="); { let mut b=[0u8;18]; print_raw(hex_str((*f).cs,     &mut b)); }
+    print_raw("   SS="); { let mut b=[0u8;18]; print_raw(hex_str((*f).ss,     &mut b)); }
     print_raw("\n");
     loop { asm!("hlt", options(nomem, nostack)); }
+}
+
+// ── #GP ──────────────────────────────────────────────────────────────────────
+isr_with_err!(isr_gp, handle_gp);
+
+#[no_mangle]
+pub unsafe extern "C" fn handle_gp(f: *mut TF) {
+    let err = (*f).rax;
+    let rip = (*f).rip;
+    printc("\n[#GP] GENERAL PROTECTION FAULT\n", col::LRED);
+    print("  err=");    { let mut b=[0u8;18]; print(hex_str(err,        &mut b)); }
+    print("  rip=");    { let mut b=[0u8;18]; print(hex_str(rip,        &mut b)); }
+    print("   cs=");    { let mut b=[0u8;18]; print(hex_str((*f).cs,    &mut b)); }
+    print("  rsp=");    { let mut b=[0u8;18]; print(hex_str((*f).rsp,   &mut b)); }
+    print("   ss=");    { let mut b=[0u8;18]; print(hex_str((*f).ss,    &mut b)); }
+    print("\n");
+    crate::panic_no_dyn("Unhandled #GP");
 }
 
 // ── #PF ──────────────────────────────────────────────────────────────────────
@@ -214,7 +240,6 @@ isr_with_err!(isr_pf, handle_pf);
 
 #[no_mangle]
 pub unsafe extern "C" fn handle_pf(f: *mut TF) {
-    use crate::debug::print;
     let err  = (*f).rax;
     let rip  = (*f).rip;
     let addr: u64;
@@ -235,7 +260,7 @@ isr_no_err!(isr_tmr, handle_timer);
 
 #[no_mangle]
 pub unsafe extern "C" fn handle_timer(_: *mut TF) {
-    outb(0x20, 0x20); // EOI
+    outb(0x20, 0x20);
     TICK += 1;
     schedule();
 }
@@ -311,7 +336,6 @@ pub unsafe extern "C" fn handle_syscall(f: *mut TF) {
     let p4   = THREADS[CUR.load(Ordering::Relaxed)].cr3;
 
     tf.rax = match num {
-        // write(fd, buf, len) — fd=1 stdout, fd=2 stderr → VGA
         1 => {
             if (a1 == 1 || a1 == 2) && valid_buf(p4, a2, a3 as usize) {
                 let ptr = a2 as *const u8;
@@ -321,9 +345,7 @@ pub unsafe extern "C" fn handle_syscall(f: *mut TF) {
                 a3
             } else { 0 }
         }
-        // getpid() → 0 placeholder
         2 => 0,
-        // exit(code)
         0 => {
             let c = CUR.load(Ordering::Relaxed);
             THREADS[c].state = TS::Dead;

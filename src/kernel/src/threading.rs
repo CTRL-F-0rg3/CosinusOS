@@ -1,6 +1,4 @@
 // CosinusOS — threading.rs
-// Wątki kernelowe i userspace, scheduler round-robin, thread_switch
-
 use core::arch::{asm, naked_asm};
 use core::sync::atomic::{AtomicUsize, Ordering};
 use crate::sync::Spinlock;
@@ -8,20 +6,16 @@ use crate::mm::{VirtAddr, PhysAddr, PTE_W, PTE_U, K_P4, PAGE_SIZE, KERNEL_STACK_
 use crate::debug::{serial_print, serial_hex, print, num_str, hex_str};
 use crate::perm::tss_rsp0;
 
-// ── Stałe ────────────────────────────────────────────────────────────────────
 pub const MAX_THREADS: usize = 64;
 
-// ── Trampoliny (tramp.asm) ────────────────────────────────────────────────────
 unsafe extern "C" {
     pub fn tramp_k();
     pub fn tramp_u();
 }
 
-// ── Stan wątku ───────────────────────────────────────────────────────────────
 #[derive(Clone, Copy, PartialEq)]
 pub enum TS { Run, Ready, Block, Dead }
 
-// ── Struktura wątku ──────────────────────────────────────────────────────────
 #[derive(Copy, Clone)]
 #[repr(C)]
 pub struct Thread {
@@ -50,13 +44,11 @@ impl Thread {
     }
 }
 
-// ── Globals ──────────────────────────────────────────────────────────────────
 pub static mut THREADS: [Thread; MAX_THREADS] = [Thread::new(); MAX_THREADS];
 pub static CUR:         AtomicUsize           = AtomicUsize::new(0);
 pub static NTHREADS:    AtomicUsize           = AtomicUsize::new(0);
 static SCHED_LOCK:      Spinlock              = Spinlock::new();
 
-// ── sched_init ───────────────────────────────────────────────────────────────
 pub unsafe fn sched_init() {
     let tid = spawn_k("idle\0", idle as *const () as u64, 0);
     if tid >= 0 {
@@ -65,7 +57,11 @@ pub unsafe fn sched_init() {
     }
 }
 
-// ── spawn_k: nowy wątek kernelowy ────────────────────────────────────────────
+pub unsafe fn set_name(t: &mut Thread, name: &str) {
+    let b = name.as_bytes();
+    for j in 0..core::cmp::min(15, b.len()) { t.name[j] = b[j]; }
+}
+
 pub unsafe fn spawn_k(name: &str, entry: u64, arg: u64) -> i32 {
     asm!("cli", options(nomem, nostack));
     for i in 0..MAX_THREADS {
@@ -91,14 +87,12 @@ pub unsafe fn spawn_k(name: &str, entry: u64, arg: u64) -> i32 {
     -1
 }
 
-// ── spawn_user_on_cr3: nowy wątek userspace ──────────────────────────────────
 pub unsafe fn spawn_user_on_cr3(name: &str, entry: u64, arg: u64, cr3: PhysAddr) -> i32 {
     asm!("cli", options(nomem, nostack));
     for i in 0..MAX_THREADS {
         if THREADS[i].state != TS::Dead { continue; }
         let t = &mut THREADS[i];
 
-        // Kernel stack (mapowany w K_P4)
         let ks = 0x0200_0000u64
             + i as u64 * (KERNEL_STACK_SIZE + PAGE_SIZE) as u64
             + PAGE_SIZE as u64;
@@ -107,7 +101,6 @@ pub unsafe fn spawn_user_on_cr3(name: &str, entry: u64, arg: u64, cr3: PhysAddr)
         }
         let kt = ks + KERNEL_STACK_SIZE as u64;
 
-        // User stack (mapowany w cr3 wątku z PTE_U)
         let us = 0x0400_0000u64
             + i as u64 * (USER_STACK_SIZE + PAGE_SIZE) as u64
             + PAGE_SIZE as u64;
@@ -120,20 +113,37 @@ pub unsafe fn spawn_user_on_cr3(name: &str, entry: u64, arg: u64, cr3: PhysAddr)
         t.ktop = kt; t.utop = ut; t.cr3 = cr3; t.ticks = 0;
         init_thread_stack(t, kt, ut, entry, arg, true);
 
-        // Debug: zweryfikuj adres trampoliny
+        // Debug: wypisz cały layout stosu
         {
-            let ksp           = t.krsp;
-            let stack_r14     = *((ksp + 32) as *const u64);
-            let stack_r13     = *((ksp + 24) as *const u64);
-            let stack_tramp   = *((ksp + 48) as *const u64);
-            let expected      = tramp_u as *const () as u64;
-            serial_print("[DBG] krsp=");       serial_hex(ksp);
-            serial_print(" kt=");              serial_hex(kt);
-            serial_print("\n[DBG] r14(entry)="); serial_hex(stack_r14);
-            serial_print(" r13(ut)=");         serial_hex(stack_r13);
-            serial_print("\n[DBG] tramp=");    serial_hex(stack_tramp);
-            serial_print(" expected=");        serial_hex(expected);
-            serial_print(if stack_tramp == expected { " OK\n" } else { " MISMATCH!\n" });
+            let ksp = t.krsp;
+            serial_print("[DBG] krsp=");        serial_hex(ksp);
+            serial_print(" kt=");               serial_hex(kt);
+            serial_print("\n");
+            serial_print("[DBG] [+0 ] rbx =");  serial_hex(*((ksp+0)  as *const u64));
+            serial_print("\n");
+            serial_print("[DBG] [+8 ] rbp =");  serial_hex(*((ksp+8)  as *const u64));
+            serial_print("\n");
+            serial_print("[DBG] [+16] r12 =");  serial_hex(*((ksp+16) as *const u64));
+            serial_print("\n");
+            serial_print("[DBG] [+24] r13 =");  serial_hex(*((ksp+24) as *const u64));
+            serial_print("\n");
+            serial_print("[DBG] [+32] r14 =");  serial_hex(*((ksp+32) as *const u64));
+            serial_print("\n");
+            serial_print("[DBG] [+40] r15 =");  serial_hex(*((ksp+40) as *const u64));
+            serial_print("\n");
+            serial_print("[DBG] [+48] tramp="); serial_hex(*((ksp+48) as *const u64));
+            serial_print(" expected=");         serial_hex(tramp_u as *const () as u64);
+            serial_print("\n");
+            serial_print("[DBG] [+56] RIP =");  serial_hex(*((ksp+56) as *const u64));
+            serial_print("\n");
+            serial_print("[DBG] [+64] CS  =");  serial_hex(*((ksp+64) as *const u64));
+            serial_print("\n");
+            serial_print("[DBG] [+72] RFLAGS="); serial_hex(*((ksp+72) as *const u64));
+            serial_print("\n");
+            serial_print("[DBG] [+80] RSP =");  serial_hex(*((ksp+80) as *const u64));
+            serial_print("\n");
+            serial_print("[DBG] [+88] SS  =");  serial_hex(*((ksp+88) as *const u64));
+            serial_print("\n");
         }
 
         set_name(t, name);
@@ -146,25 +156,32 @@ pub unsafe fn spawn_user_on_cr3(name: &str, entry: u64, arg: u64, cr3: PhysAddr)
     -1
 }
 
-// ── init_thread_stack ────────────────────────────────────────────────────────
-// Layout stosu (thread_switch: pop rbx rbp r12 r13 r14 r15 ret):
-//   [ksp+48] = tramp_addr  ← ret
-//   [ksp+40] = arg         → r15
-//   [ksp+32] = entry       → r14
-//   [ksp+24] = ut          → r13
-//   [ksp+16] = 0           → r12
-//   [ksp+8 ] = 0           → rbp
-//   [ksp+0 ] = 0           → rbx  ← t.krsp
+// Stos wygląda tak od krsp w górę:
+//   [+0 ] rbx   ← pop rbx
+//   [+8 ] rbp   ← pop rbp
+//   [+16] r12   ← pop r12
+//   [+24] r13   ← pop r13  (ut)
+//   [+32] r14   ← pop r14  (entry)
+//   [+40] r15   ← pop r15  (arg)
+//   [+48] tramp ← ret (skacze do tramp_u)
+//   [+56] RIP   ← iretq pobiera (entry userpace)
+//   [+64] CS    ← iretq pobiera (0x1B)
+//   [+72] RFLAGS← iretq pobiera (0x202)
+//   [+80] RSP   ← iretq pobiera (ut)
+//   [+88] SS    ← iretq pobiera (0x23)
 fn init_thread_stack(t: &mut Thread, kt: VirtAddr, ut: VirtAddr, entry: u64, arg: u64, user: bool) {
-    let tramp_addr: u64 = if user {
-        unsafe { tramp_u as *const () as u64 }
-    } else {
-        unsafe { tramp_k as *const () as u64 }
-    };
-
     let mut ksp = kt;
     unsafe {
-        ksp -= 8; *(ksp as *mut u64) = tramp_addr;
+        if user {
+            ksp -= 8; *(ksp as *mut u64) = 0x23;
+            ksp -= 8; *(ksp as *mut u64) = ut;
+            ksp -= 8; *(ksp as *mut u64) = 0x202;
+            ksp -= 8; *(ksp as *mut u64) = 0x1B;
+            ksp -= 8; *(ksp as *mut u64) = entry;
+            ksp -= 8; *(ksp as *mut u64) = tramp_u as *const () as u64;
+        } else {
+            ksp -= 8; *(ksp as *mut u64) = tramp_k as *const () as u64;
+        }
         ksp -= 8; *(ksp as *mut u64) = arg;
         ksp -= 8; *(ksp as *mut u64) = entry;
         ksp -= 8; *(ksp as *mut u64) = ut;
@@ -173,21 +190,8 @@ fn init_thread_stack(t: &mut Thread, kt: VirtAddr, ut: VirtAddr, entry: u64, arg
         ksp -= 8; *(ksp as *mut u64) = 0u64;
     }
     t.krsp = ksp;
-
-    unsafe {
-        let on_stack = *((ksp + 48) as *const u64);
-        if on_stack != tramp_addr {
-            serial_print("[FATAL] init_thread_stack: tramp mismatch!\n");
-        }
-    }
 }
 
-pub unsafe fn set_name(t: &mut Thread, name: &str) {
-    let b = name.as_bytes();
-    for j in 0..core::cmp::min(15, b.len()) { t.name[j] = b[j]; }
-}
-
-// ── Scheduler ────────────────────────────────────────────────────────────────
 pub unsafe fn schedule() {
     if SCHED_LOCK.locked.swap(true, Ordering::Acquire) { return; }
     let cur  = CUR.load(Ordering::Relaxed);
@@ -213,12 +217,16 @@ pub unsafe fn schedule() {
         asm!("mov cr3, {}", in(reg) ncr3, options(nostack));
     }
     SCHED_LOCK.locked.store(false, Ordering::Release);
+    serial_print("[SCHED] cur=");  serial_hex(cur as u64);
+    serial_print(" next=");        serial_hex(next as u64);
+    serial_print(" new_krsp=");    serial_hex(THREADS[next].krsp);
+    serial_print("\n");
+    thread_switch(&mut THREADS[cur].krsp as *mut u64, THREADS[next].krsp);
     thread_switch(&mut THREADS[cur].krsp as *mut u64, THREADS[next].krsp);
 }
 
 pub unsafe fn thread_yield() { schedule(); }
 
-// ── thread_switch (naked) ────────────────────────────────────────────────────
 #[unsafe(naked)]
 unsafe extern "C" fn thread_switch(old: *mut VirtAddr, new: VirtAddr) {
     naked_asm!(
@@ -230,7 +238,6 @@ unsafe extern "C" fn thread_switch(old: *mut VirtAddr, new: VirtAddr) {
     );
 }
 
-// ── Idle thread ──────────────────────────────────────────────────────────────
 unsafe extern "C" fn idle(_: u64) -> ! {
     loop { asm!("hlt", options(nomem, nostack)); }
 }
