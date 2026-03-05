@@ -101,7 +101,8 @@ _start:
     ; ── Załaduj GDT i skocz do 64-bit ───────────────────────────
     ; GDT musi być adresowany fizycznie w 32-bit PM!
     ; Używamy LEAQ-style przez wartość absolutną 32-bit
-    lgdt [gdt64_ptr_low]
+    mov eax, gdt64_ptr_low
+    lgdt [eax]
     jmp  0x08:.longmode64
 
 .no_longmode:
@@ -131,6 +132,11 @@ bits 64
     mov edi, eax
     mov esi, ecx
 
+    ; ── Włącz SSE/SSE2 (CR4.OSFXSR + CR4.OSXMMEXCPT) ──────────────────
+    mov rax, cr4
+    or  rax, (1 << 9) | (1 << 10)
+    mov cr4, rax
+    ; ────────────────────────────────────────────────────────────────
     call kernel_main
 
 .hang:
