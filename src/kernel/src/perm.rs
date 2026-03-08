@@ -127,7 +127,7 @@ pub unsafe fn init_idt() {
     IDT[0x20] = IdtE::new(isr_tmr as *const () as u64, 0x08, 0, 0); // IRQ0 timer
     IDT[0x21] = IdtE::new(isr_kb  as *const () as u64, 0x08, 0, 0); // IRQ1 keyboard
     IDT[0x80] = IdtE::new(isr_sys as *const () as u64, 0x08, 3, 0); // int 0x80 syscall
-
+    set_idt_gate(0x80, syscall_handler as u64, 0x8E | 0x60); // DPL=3 żeby ring3 mogło wywołać
     IDTR.lim  = (core::mem::size_of::<[IdtE; IDT_LEN]>() - 1) as u16;
     IDTR.base = IDT.as_ptr() as u64;
     asm!("lidt [{}]", in(reg) &raw const IDTR, options(preserves_flags));

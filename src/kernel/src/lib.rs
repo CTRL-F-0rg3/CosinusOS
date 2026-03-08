@@ -252,8 +252,8 @@ pub extern "C" fn kernel_main(mb_magic: u64, mb_info: u64) -> ! {
 
         print("\n");
         printc("=== Kernel Terminal ===\n", col::YELLOW);
-        let t = spawn_k("kterminal\0", kernel_terminal as *const () as u64, 0);
-        debug::log_ok("Kernel debug terminal (PS/2 + COM1)", t >= 0);
+        //let t = spawn_k("kterminal\0", kernel_terminal as *const () as u64, 0);
+        //debug::log_ok("Kernel debug terminal (PS/2 + COM1)", t >= 0);
 
         print("\n");
         printc("=== Stan systemu ===\n", col::YELLOW);

@@ -7,10 +7,43 @@ use crate::debug::{serial_print, serial_hex, print, num_str, hex_str};
 use crate::perm::tss_rsp0;
 
 pub const MAX_THREADS: usize = 64;
+#[naked]
+pub unsafe extern "C" fn syscall_handler() {
+    core::arch::asm!(
+        "push rax", "push rdi", "push rsi", "push rdx",
+        "push rcx", "push r11",
+        "mov rdi, rax",   // arg0 = numer syscalla
+        "mov rsi, [rsp+8*2]",  // arg1 (oryginalne rdi)
+        "mov rdx, [rsp+8*3]",  // arg2 (oryginalne rsi)
+        "mov rcx, [rsp+8*4]",  // arg3 (oryginalne rdx)
+        "call syscall_dispatch",
+        "pop r11", "pop rcx", "pop rdx", "pop rsi", "pop rdi", "pop rax",
+        "iretq",
+        options(noreturn)
+    );
+}
 
+pub unsafe extern "C" fn syscall_dispatch(num: u64, arg1: u64, arg2: u64, arg3: u64) {
+    match num {
+        1 => { // Write
+            let ptr = arg2 as *const u8;
+            let len = arg3 as usize;
+            if !ptr.is_null() && len < 65536 {
+                let s = core::slice::from_raw_parts(ptr, len);
+                if let Ok(text) = core::str::from_utf8(s) {
+                    crate::print!("{}", text);
+                }
+            }
+        }
+        0 => { // Exit
+            crate::threading::exit_thread();
+        }
+        _ => {}
+    }
+}
 unsafe extern "C" {
-    pub fn tramp_k();
     pub fn tramp_u();
+    pub fn tramp_k();
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -54,6 +87,7 @@ pub unsafe fn sched_init() {
     if tid >= 0 {
         THREADS[tid as usize].state = TS::Run;
         CUR.store(tid as usize, Ordering::SeqCst);
+        tss_rsp0(THREADS[tid as usize].ktop); // ← to
     }
 }
 
