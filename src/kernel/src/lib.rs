@@ -256,13 +256,16 @@ pub extern "C" fn kernel_main(mb_magic: u64, mb_info: u64) -> ! {
         //debug::log_ok("Kernel debug terminal (PS/2 + COM1)", t >= 0);
 
         print("\n");
-        printc("=== Stan systemu ===\n", col::YELLOW);
-        print("  Pamiec wolna: "); pnum!(mm_free_kb()); print(" KB\n");
+        printc("=== system ===\n", col::YELLOW);
+        print("  memory: "); pnum!(mm_free_kb()); print(" KB\n");
         print("  Watki: "); pnum!(NTHREADS.load(Ordering::Relaxed)); print("\n");
 
         print("\n");
         set_col(col::attr(col::BLACK, col::LGREEN));
-        print(" [ SYSTEM GOTOWY ] ");
+        print(" [ COMPLETE ] ");
+        set_col(col::attr(col::YELLOW, col::BLACK));
+        print("########################################################\n");
+
         set_col(col::WHITE); print("\n\n");
         serial_print("[OK] boot complete\n");
 

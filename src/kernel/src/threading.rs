@@ -1,25 +1,28 @@
 // CosinusOS — threading.rs
-use core::arch::{asm, naked_asm};
+use core::arch::asm;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use crate::sync::Spinlock;
-use crate::mm::{VirtAddr, PhysAddr, PTE_W, PTE_U, K_P4, PAGE_SIZE, KERNEL_STACK_SIZE, USER_STACK_SIZE, vmap, mm_alloc, new_user_p4};
-use crate::debug::{serial_print, serial_hex, print, num_str, hex_str};
+use crate::mm::{VirtAddr, PhysAddr, PTE_W, PTE_U, K_P4, PAGE_SIZE, KERNEL_STACK_SIZE, USER_STACK_SIZE, vmap, mm_alloc};
+use crate::debug::{serial_print, serial_hex, print, num_str};
 use crate::perm::tss_rsp0;
 
 pub const MAX_THREADS: usize = 64;
-#[naked]
+
+// FIXED: #[naked] -> #[unsafe(naked)], asm! -> naked_asm!, options(noreturn) usunięte,
+//        "call syscall_dispatch" -> sym syscall_dispatch
+#[unsafe(naked)]
 pub unsafe extern "C" fn syscall_handler() {
-    core::arch::asm!(
+    core::arch::naked_asm!(
         "push rax", "push rdi", "push rsi", "push rdx",
         "push rcx", "push r11",
-        "mov rdi, rax",   // arg0 = numer syscalla
+        "mov rdi, rax",        // arg0 = numer syscalla
         "mov rsi, [rsp+8*2]",  // arg1 (oryginalne rdi)
         "mov rdx, [rsp+8*3]",  // arg2 (oryginalne rsi)
         "mov rcx, [rsp+8*4]",  // arg3 (oryginalne rdx)
-        "call syscall_dispatch",
+        "call {f}",
         "pop r11", "pop rcx", "pop rdx", "pop rsi", "pop rdi", "pop rax",
         "iretq",
-        options(noreturn)
+        f = sym syscall_dispatch,
     );
 }
 
@@ -31,16 +34,22 @@ pub unsafe extern "C" fn syscall_dispatch(num: u64, arg1: u64, arg2: u64, arg3: 
             if !ptr.is_null() && len < 65536 {
                 let s = core::slice::from_raw_parts(ptr, len);
                 if let Ok(text) = core::str::from_utf8(s) {
-                    crate::print!("{}", text);
+                    // FIXED: crate::print!(...) -> crate::debug::print(text)
+                    crate::debug::print(text);
                 }
             }
         }
         0 => { // Exit
-            crate::threading::exit_thread();
+            // FIXED: exit_thread() nie istnieje — inline dead + schedule
+            let c = CUR.load(Ordering::Relaxed);
+            THREADS[c].state = TS::Dead;
+            NTHREADS.fetch_sub(1, Ordering::Relaxed);
+            schedule();
         }
         _ => {}
     }
 }
+
 unsafe extern "C" {
     pub fn tramp_u();
     pub fn tramp_k();
@@ -87,7 +96,7 @@ pub unsafe fn sched_init() {
     if tid >= 0 {
         THREADS[tid as usize].state = TS::Run;
         CUR.store(tid as usize, Ordering::SeqCst);
-        tss_rsp0(THREADS[tid as usize].ktop); // ← to
+        tss_rsp0(THREADS[tid as usize].ktop);
     }
 }
 
@@ -147,7 +156,6 @@ pub unsafe fn spawn_user_on_cr3(name: &str, entry: u64, arg: u64, cr3: PhysAddr)
         t.ktop = kt; t.utop = ut; t.cr3 = cr3; t.ticks = 0;
         init_thread_stack(t, kt, ut, entry, arg, true);
 
-        // Debug: wypisz cały layout stosu
         {
             let ksp = t.krsp;
             serial_print("[DBG] krsp=");        serial_hex(ksp);
@@ -256,14 +264,13 @@ pub unsafe fn schedule() {
     serial_print(" new_krsp=");    serial_hex(THREADS[next].krsp);
     serial_print("\n");
     thread_switch(&mut THREADS[cur].krsp as *mut u64, THREADS[next].krsp);
-    thread_switch(&mut THREADS[cur].krsp as *mut u64, THREADS[next].krsp);
 }
 
 pub unsafe fn thread_yield() { schedule(); }
 
 #[unsafe(naked)]
 unsafe extern "C" fn thread_switch(old: *mut VirtAddr, new: VirtAddr) {
-    naked_asm!(
+    core::arch::naked_asm!(
         "push rbx", "push rbp", "push r12", "push r13", "push r14", "push r15",
         "mov [rdi], rsp",
         "mov rsp, rsi",

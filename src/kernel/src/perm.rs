@@ -121,13 +121,16 @@ static mut IDT:  [IdtE; IDT_LEN] = [IdtE::null(); IDT_LEN];
 static mut IDTR: Idtr             = Idtr { lim: 0, base: 0 };
 
 pub unsafe fn init_idt() {
+    use crate::threading::syscall_handler;
+
     IDT[0x08] = IdtE::new(isr_df  as *const () as u64, 0x08, 0, 1); // #DF IST1
     IDT[0x0D] = IdtE::new(isr_gp  as *const () as u64, 0x08, 0, 0); // #GP
     IDT[0x0E] = IdtE::new(isr_pf  as *const () as u64, 0x08, 0, 0); // #PF
     IDT[0x20] = IdtE::new(isr_tmr as *const () as u64, 0x08, 0, 0); // IRQ0 timer
     IDT[0x21] = IdtE::new(isr_kb  as *const () as u64, 0x08, 0, 0); // IRQ1 keyboard
-    IDT[0x80] = IdtE::new(isr_sys as *const () as u64, 0x08, 3, 0); // int 0x80 syscall
-    set_idt_gate(0x80, syscall_handler as u64, 0x8E | 0x60); // DPL=3 żeby ring3 mogło wywołać
+    // FIXED: usunięty duplikat set_idt_gate (nie istnieje) — używamy IdtE::new z DPL=3
+    IDT[0x80] = IdtE::new(syscall_handler as *const () as u64, 0x08, 3, 0); // int 0x80 DPL=3
+
     IDTR.lim  = (core::mem::size_of::<[IdtE; IDT_LEN]>() - 1) as u16;
     IDTR.base = IDT.as_ptr() as u64;
     asm!("lidt [{}]", in(reg) &raw const IDTR, options(preserves_flags));
