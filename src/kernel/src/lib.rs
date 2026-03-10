@@ -262,7 +262,7 @@ pub extern "C" fn kernel_main(mb_magic: u64, mb_info: u64) -> ! {
 
         print("\n");
         set_col(col::attr(col::BLACK, col::LGREEN));
-        print(" [ COMPLETE ] ");
+        print(" [ COMPLETE ] \n");
         set_col(col::attr(col::YELLOW, col::BLACK));
         print("########################################################\n");
 
