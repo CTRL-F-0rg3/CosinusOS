@@ -7,6 +7,7 @@
 
 use core::{arch::asm, panic::PanicInfo, sync::atomic::Ordering};
 pub mod ipc;
+pub mod usb;
 pub mod syscall_api;
 pub mod sync;
 pub mod debug;
@@ -210,7 +211,9 @@ pub extern "C" fn kernel_main(mb_magic: u64, mb_info: u64) -> ! {
     unsafe {
         cls();
         debug::serial_init();
-
+        let usb_ok = usb::usb_init();
+        debug::log_ok("USB XHCI/EHCI+HID", usb_ok);
+        spawn_k("usb\0", usb::usb_thread as *const () as u64, 0);
         set_col(col::attr(col::LCYAN, col::BLACK));
         print(" ===========================\n");
         print("  CosinusOS Microkernel v3.5\n");

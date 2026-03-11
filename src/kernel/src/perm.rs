@@ -327,3 +327,5 @@ isr_no_err!(isr_sys, handle_syscall);
 pub unsafe extern "C" fn handle_syscall(f: *mut TF) {
     crate::syscall_api::syscall_dispatch_v2(f);
 }
+
+pub unsafe fn kb_push_pub(c: char) { kb_push(c); }
