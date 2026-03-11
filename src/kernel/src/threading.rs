@@ -8,8 +8,6 @@ use crate::perm::tss_rsp0;
 
 pub const MAX_THREADS: usize = 64;
 
-// FIXED: #[naked] -> #[unsafe(naked)], asm! -> naked_asm!, options(noreturn) usunięte,
-//        "call syscall_dispatch" -> sym syscall_dispatch
 #[unsafe(naked)]
 pub unsafe extern "C" fn syscall_handler() {
     core::arch::naked_asm!(
@@ -28,19 +26,17 @@ pub unsafe extern "C" fn syscall_handler() {
 
 pub unsafe extern "C" fn syscall_dispatch(num: u64, arg1: u64, arg2: u64, arg3: u64) {
     match num {
-        1 => { // Write
+        1 => {
             let ptr = arg2 as *const u8;
             let len = arg3 as usize;
             if !ptr.is_null() && len < 65536 {
                 let s = core::slice::from_raw_parts(ptr, len);
                 if let Ok(text) = core::str::from_utf8(s) {
-                    // FIXED: crate::print!(...) -> crate::debug::print(text)
                     crate::debug::print(text);
                 }
             }
         }
-        0 => { // Exit
-            // FIXED: exit_thread() nie istnieje — inline dead + schedule
+        0 => {
             let c = CUR.load(Ordering::Relaxed);
             THREADS[c].state = TS::Dead;
             NTHREADS.fetch_sub(1, Ordering::Relaxed);
@@ -71,7 +67,6 @@ pub struct Thread {
     pub cr3:   PhysAddr,
     pub name:  [u8; 16],
     pub ticks: u64,
-    //pub wake_tick: u64,
 }
 
 impl Thread {
@@ -89,7 +84,7 @@ impl Thread {
     }
 }
 
-pub static mut THREADS: [Thread; MAX_THREADS] = [Thread::new(); MAX_THREADS]; //wake_tick: 0,
+pub static mut THREADS: [Thread; MAX_THREADS] = [Thread::new(); MAX_THREADS];
 pub static CUR:         AtomicUsize           = AtomicUsize::new(0);
 pub static NTHREADS:    AtomicUsize           = AtomicUsize::new(0);
 static SCHED_LOCK:      Spinlock              = Spinlock::new();
@@ -161,33 +156,33 @@ pub unsafe fn spawn_user_on_cr3(name: &str, entry: u64, arg: u64, cr3: PhysAddr)
 
         {
             let ksp = t.krsp;
-            serial_print("[DBG] krsp=");        serial_hex(ksp);
-            serial_print(" kt=");               serial_hex(kt);
+            serial_print("[DBG] krsp=");         serial_hex(ksp);
+            serial_print(" kt=");                serial_hex(kt);
             serial_print("\n");
-            serial_print("[DBG] [+0 ] rbx =");  serial_hex(*((ksp+0)  as *const u64));
+            serial_print("[DBG] [+0 ] r15 =");   serial_hex(*((ksp+0)  as *const u64));
             serial_print("\n");
-            serial_print("[DBG] [+8 ] rbp =");  serial_hex(*((ksp+8)  as *const u64));
+            serial_print("[DBG] [+8 ] r14 =");   serial_hex(*((ksp+8)  as *const u64));
             serial_print("\n");
-            serial_print("[DBG] [+16] r12 =");  serial_hex(*((ksp+16) as *const u64));
+            serial_print("[DBG] [+16] r13 =");   serial_hex(*((ksp+16) as *const u64));
             serial_print("\n");
-            serial_print("[DBG] [+24] r13 =");  serial_hex(*((ksp+24) as *const u64));
+            serial_print("[DBG] [+24] r12 =");   serial_hex(*((ksp+24) as *const u64));
             serial_print("\n");
-            serial_print("[DBG] [+32] r14 =");  serial_hex(*((ksp+32) as *const u64));
+            serial_print("[DBG] [+32] rbp =");   serial_hex(*((ksp+32) as *const u64));
             serial_print("\n");
-            serial_print("[DBG] [+40] r15 =");  serial_hex(*((ksp+40) as *const u64));
+            serial_print("[DBG] [+40] rbx =");   serial_hex(*((ksp+40) as *const u64));
             serial_print("\n");
-            serial_print("[DBG] [+48] tramp="); serial_hex(*((ksp+48) as *const u64));
-            serial_print(" expected=");         serial_hex(tramp_u as *const () as u64);
+            serial_print("[DBG] [+48] tramp=");  serial_hex(*((ksp+48) as *const u64));
+            serial_print(" expected=");          serial_hex(tramp_u as *const () as u64);
             serial_print("\n");
-            serial_print("[DBG] [+56] RIP =");  serial_hex(*((ksp+56) as *const u64));
+            serial_print("[DBG] [+56] RIP =");   serial_hex(*((ksp+56) as *const u64));
             serial_print("\n");
-            serial_print("[DBG] [+64] CS  =");  serial_hex(*((ksp+64) as *const u64));
+            serial_print("[DBG] [+64] CS  =");   serial_hex(*((ksp+64) as *const u64));
             serial_print("\n");
             serial_print("[DBG] [+72] RFLAGS="); serial_hex(*((ksp+72) as *const u64));
             serial_print("\n");
-            serial_print("[DBG] [+80] RSP =");  serial_hex(*((ksp+80) as *const u64));
+            serial_print("[DBG] [+80] RSP =");   serial_hex(*((ksp+80) as *const u64));
             serial_print("\n");
-            serial_print("[DBG] [+88] SS  =");  serial_hex(*((ksp+88) as *const u64));
+            serial_print("[DBG] [+88] SS  =");   serial_hex(*((ksp+88) as *const u64));
             serial_print("\n");
         }
 
@@ -201,38 +196,51 @@ pub unsafe fn spawn_user_on_cr3(name: &str, entry: u64, arg: u64, cr3: PhysAddr)
     -1
 }
 
-// Stos wygląda tak od krsp w górę:
-//   [+0 ] rbx   ← pop rbx
-//   [+8 ] rbp   ← pop rbp
-//   [+16] r12   ← pop r12
-//   [+24] r13   ← pop r13  (ut)
-//   [+32] r14   ← pop r14  (entry)
-//   [+40] r15   ← pop r15  (arg)
-//   [+48] tramp ← ret (skacze do tramp_u)
-//   [+56] RIP   ← iretq pobiera (entry userpace)
-//   [+64] CS    ← iretq pobiera (0x1B)
-//   [+72] RFLAGS← iretq pobiera (0x202)
-//   [+80] RSP   ← iretq pobiera (ut)
-//   [+88] SS    ← iretq pobiera (0x23)
+// Układ stosu od krsp w górę (thread_switch popuje w tej kolejności):
+//
+//   thread_switch wykonuje:
+//     pop r15, pop r14, pop r13, pop r12, pop rbp, pop rbx, ret
+//
+//   Więc na stosie od krsp musi być:
+//   [krsp+0 ] r15  = arg
+//   [krsp+8 ] r14  = entry
+//   [krsp+16] r13  = ut
+//   [krsp+24] r12  = 0
+//   [krsp+32] rbp  = 0
+//   [krsp+40] rbx  = 0
+//   [krsp+48] ret addr = tramp_u / tramp_k   ← ret skacze tutaj
+//
+//   tramp_u następnie wykonuje iretq z ramką:
+//   [krsp+56] RIP    = entry
+//   [krsp+64] CS     = 0x1B
+//   [krsp+72] RFLAGS = 0x202
+//   [krsp+80] RSP    = ut
+//   [krsp+88] SS     = 0x23
 fn init_thread_stack(t: &mut Thread, kt: VirtAddr, ut: VirtAddr, entry: u64, arg: u64, user: bool) {
     let mut ksp = kt;
     unsafe {
         if user {
-            ksp -= 8; *(ksp as *mut u64) = 0x23;
-            ksp -= 8; *(ksp as *mut u64) = ut;
-            ksp -= 8; *(ksp as *mut u64) = 0x202;
-            ksp -= 8; *(ksp as *mut u64) = 0x1B;
-            ksp -= 8; *(ksp as *mut u64) = entry;
+            // iretq frame (od najwyższego adresu — push kolejno)
+            ksp -= 8; *(ksp as *mut u64) = 0x23;       // SS
+            ksp -= 8; *(ksp as *mut u64) = ut;          // RSP
+            ksp -= 8; *(ksp as *mut u64) = 0x202;       // RFLAGS (IF=1)
+            ksp -= 8; *(ksp as *mut u64) = 0x1B;        // CS user code
+            ksp -= 8; *(ksp as *mut u64) = entry;       // RIP
+            // ret address → tramp_u wykona iretq
             ksp -= 8; *(ksp as *mut u64) = tramp_u as *const () as u64;
         } else {
             ksp -= 8; *(ksp as *mut u64) = tramp_k as *const () as u64;
         }
-        ksp -= 8; *(ksp as *mut u64) = arg;
-        ksp -= 8; *(ksp as *mut u64) = entry;
-        ksp -= 8; *(ksp as *mut u64) = ut;
-        ksp -= 8; *(ksp as *mut u64) = 0u64;
-        ksp -= 8; *(ksp as *mut u64) = 0u64;
-        ksp -= 8; *(ksp as *mut u64) = 0u64;
+        // callee-saved regs w kolejności odwrotnej do pop w thread_switch:
+        // thread_switch: pop r15, r14, r13, r12, rbp, rbx
+        // więc push kolejno: rbx, rbp, r12, r13, r14, r15
+        // → na stosie od dołu (niższy adres): r15, r14, r13, r12, rbp, rbx
+        ksp -= 8; *(ksp as *mut u64) = 0u64;            // rbx
+        ksp -= 8; *(ksp as *mut u64) = 0u64;            // rbp
+        ksp -= 8; *(ksp as *mut u64) = 0u64;            // r12
+        ksp -= 8; *(ksp as *mut u64) = ut;              // r13 (user stack top dla tramp_u)
+        ksp -= 8; *(ksp as *mut u64) = entry;           // r14 (entry dla tramp_u)
+        ksp -= 8; *(ksp as *mut u64) = arg;             // r15 (arg)
     }
     t.krsp = ksp;
 }
@@ -257,7 +265,7 @@ pub unsafe fn schedule() {
         SCHED_LOCK.locked.store(false, Ordering::Release);
         return;
     }
-    
+
     if THREADS[cur].state == TS::Run { THREADS[cur].state = TS::Ready; }
     THREADS[next].state = TS::Run;
     THREADS[next].ticks += 1;
@@ -280,6 +288,9 @@ pub unsafe fn schedule() {
 
 pub unsafe fn thread_yield() { schedule(); }
 
+// thread_switch: zapisuje callee-saved na starym stosie, ładuje nowy
+// push: rbx, rbp, r12, r13, r14, r15  → na stosie od dołu: r15,r14,r13,r12,rbp,rbx
+// pop:  r15, r14, r13, r12, rbp, rbx
 #[unsafe(naked)]
 unsafe extern "C" fn thread_switch(old: *mut VirtAddr, new: VirtAddr) {
     core::arch::naked_asm!(
