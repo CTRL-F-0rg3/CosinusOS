@@ -16,8 +16,6 @@ pub mod perm;
 pub mod threading;
 pub mod userspace_loader;
 
-// Re-eksport publicznego API kernela (używane przez userspace przez syscalle,
-// tutaj jako dokumentacja interfejsu)
 pub use mm::{PhysAddr, VirtAddr, PAGE_SIZE, PTE_W, PTE_U};
 pub use mm::{mm_alloc, mm_free_phys, mm_free_kb, mm_used_kb, mm_total_kb};
 pub use mm::{vmap, vunmap, virt_to_phys, valid_user, valid_buf, new_user_p4};
@@ -197,7 +195,7 @@ fn panic(info: &PanicInfo) -> ! {
     loop { unsafe { asm!("hlt", options(nomem, nostack)); } }
 }
 
-// ── Makra lokalne (używają debug:: ścieżki) ──────────────────────────────────
+// ── Makra lokalne ─────────────────────────────────────────────────────────────
 macro_rules! pnum {
     ($v:expr) => {{ let mut b = [0u8; 24]; print(num_str($v as usize, &mut b)); }};
 }
@@ -209,11 +207,10 @@ macro_rules! phex {
 #[no_mangle]
 pub extern "C" fn kernel_main(mb_magic: u64, mb_info: u64) -> ! {
     unsafe {
+        // ── 1. Podstawowe I/O (nie wymaga pamięci) ───────────────────────────
         cls();
         debug::serial_init();
-        let usb_ok = usb::usb_init();
-        debug::log_ok("USB XHCI/EHCI+HID", usb_ok);
-        spawn_k("usb\0", usb::usb_thread as *const () as u64, 0);
+
         set_col(col::attr(col::LCYAN, col::BLACK));
         print(" ===========================\n");
         print("  CosinusOS Microkernel v3.5\n");
@@ -221,17 +218,26 @@ pub extern "C" fn kernel_main(mb_magic: u64, mb_info: u64) -> ! {
         set_col(col::WHITE);
         serial_print("=== CosinusOS v3.5 boot ===\n");
 
+        // ── 2. Pamięć — NAJPIERW, zanim cokolwiek alokuje ───────────────────
         mm::mm_init(0x0100_0000, 0x0F00_0000);
         mm::vmm_init(0x1000);
         debug::log_ok("PMM + VMM", true);
 
+        // ── 3. CPU: GDT / IDT / PIC / PIT ───────────────────────────────────
         perm::init_gdt(); debug::log_ok("GDT", true);
         perm::init_pic(); debug::log_ok("PIC", true);
         perm::init_idt(); debug::log_ok("IDT + IRQ1 keyboard", true);
 
+        // ── 4. Scheduler ─────────────────────────────────────────────────────
         threading::sched_init(); debug::log_ok("Scheduler (idle thread)", true);
         perm::init_pit();        debug::log_ok("PIT 100Hz", true);
 
+        // ── 5. USB — dopiero po mm_init + idt ────────────────────────────────
+        let usb_ok = usb::usb_init();
+        debug::log_ok("USB XHCI/EHCI+HID", usb_ok);
+        spawn_k("usb\0", usb::usb_thread as *const () as u64, 0);
+
+        // ── 6. Userspace ─────────────────────────────────────────────────────
         print("\n");
         printc("=== Userspace ===\n", col::YELLOW);
 
@@ -254,11 +260,13 @@ pub extern "C" fn kernel_main(mb_magic: u64, mb_info: u64) -> ! {
             print("  Otrzymano: "); phex!(mb_magic); print("\n");
         }
 
+        // ── 7. Kernel terminal (opcjonalnie) ─────────────────────────────────
         print("\n");
         printc("=== Kernel Terminal ===\n", col::YELLOW);
         //let t = spawn_k("kterminal\0", kernel_terminal as *const () as u64, 0);
         //debug::log_ok("Kernel debug terminal (PS/2 + COM1)", t >= 0);
 
+        // ── 8. Info systemowe ─────────────────────────────────────────────────
         print("\n");
         printc("=== system ===\n", col::YELLOW);
         print("  memory: "); pnum!(mm_free_kb()); print(" KB\n");
@@ -269,7 +277,6 @@ pub extern "C" fn kernel_main(mb_magic: u64, mb_info: u64) -> ! {
         print(" [ COMPLETE ] \n");
         set_col(col::attr(col::YELLOW, col::BLACK));
         print("########################################################\n");
-
         set_col(col::WHITE); print("\n\n");
         serial_print("[OK] boot complete\n");
 
