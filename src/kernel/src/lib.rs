@@ -6,7 +6,8 @@
 #![allow(unsafe_op_in_unsafe_fn)]
 
 use core::{arch::asm, panic::PanicInfo, sync::atomic::Ordering};
-
+pub mod ipc;
+pub mod syscall_api;
 pub mod sync;
 pub mod debug;
 pub mod mm;

@@ -325,37 +325,5 @@ isr_no_err!(isr_sys, handle_syscall);
 
 #[no_mangle]
 pub unsafe extern "C" fn handle_syscall(f: *mut TF) {
-    use crate::threading::{THREADS, CUR};
-    use core::sync::atomic::Ordering;
-    use crate::mm::valid_buf;
-    use crate::debug::{putc, VGA_LOCK};
-    use crate::threading::{TS, NTHREADS};
-
-    let tf   = &mut *f;
-    let num  = tf.rax;
-    let a1   = tf.rdi;
-    let a2   = tf.rsi;
-    let a3   = tf.rdx;
-    let p4   = THREADS[CUR.load(Ordering::Relaxed)].cr3;
-
-    tf.rax = match num {
-        1 => {
-            if (a1 == 1 || a1 == 2) && valid_buf(p4, a2, a3 as usize) {
-                let ptr = a2 as *const u8;
-                VGA_LOCK.lock();
-                for i in 0..a3 as usize { putc(*ptr.add(i) as char); }
-                VGA_LOCK.unlock();
-                a3
-            } else { 0 }
-        }
-        2 => 0,
-        0 => {
-            let c = CUR.load(Ordering::Relaxed);
-            THREADS[c].state = TS::Dead;
-            NTHREADS.fetch_sub(1, Ordering::Relaxed);
-            schedule();
-            0
-        }
-        _ => !0,
-    };
+    crate::syscall_api::syscall_dispatch_v2(f);
 }

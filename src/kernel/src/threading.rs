@@ -13,16 +13,16 @@ pub const MAX_THREADS: usize = 64;
 #[unsafe(naked)]
 pub unsafe extern "C" fn syscall_handler() {
     core::arch::naked_asm!(
-        "push rax", "push rdi", "push rsi", "push rdx",
-        "push rcx", "push r11",
-        "mov rdi, rax",        // arg0 = numer syscalla
-        "mov rsi, [rsp+8*2]",  // arg1 (oryginalne rdi)
-        "mov rdx, [rsp+8*3]",  // arg2 (oryginalne rsi)
-        "mov rcx, [rsp+8*4]",  // arg3 (oryginalne rdx)
+        "push rax","push rbp","push rbx","push rcx","push rdx",
+        "push rsi","push rdi","push r8","push r9","push r10",
+        "push r11","push r12","push r13","push r14","push r15",
+        "mov rdi, rsp",
         "call {f}",
-        "pop r11", "pop rcx", "pop rdx", "pop rsi", "pop rdi", "pop rax",
+        "pop r15","pop r14","pop r13","pop r12","pop r11","pop r10",
+        "pop r9","pop r8","pop rdi","pop rsi","pop rdx","pop rcx",
+        "pop rbx","pop rbp","pop rax",
         "iretq",
-        f = sym syscall_dispatch,
+        f = sym crate::syscall_api::syscall_dispatch_v2,
     );
 }
 
@@ -61,6 +61,7 @@ pub enum TS { Run, Ready, Block, Dead }
 #[derive(Copy, Clone)]
 #[repr(C)]
 pub struct Thread {
+    pub wake_tick: u64,
     pub id:    u32,
     pub state: TS,
     pub prio:  u8,
@@ -70,6 +71,7 @@ pub struct Thread {
     pub cr3:   PhysAddr,
     pub name:  [u8; 16],
     pub ticks: u64,
+    //pub wake_tick: u64,
 }
 
 impl Thread {
@@ -78,6 +80,7 @@ impl Thread {
             id: 0, state: TS::Dead, prio: 10,
             krsp: 0, ktop: 0, utop: 0, cr3: 0,
             name: [0; 16], ticks: 0,
+            wake_tick: 0,
         }
     }
     pub fn name_str(&self) -> &str {
@@ -86,7 +89,7 @@ impl Thread {
     }
 }
 
-pub static mut THREADS: [Thread; MAX_THREADS] = [Thread::new(); MAX_THREADS];
+pub static mut THREADS: [Thread; MAX_THREADS] = [Thread::new(); MAX_THREADS]; //wake_tick: 0,
 pub static CUR:         AtomicUsize           = AtomicUsize::new(0);
 pub static NTHREADS:    AtomicUsize           = AtomicUsize::new(0);
 static SCHED_LOCK:      Spinlock              = Spinlock::new();
@@ -236,6 +239,14 @@ fn init_thread_stack(t: &mut Thread, kt: VirtAddr, ut: VirtAddr, entry: u64, arg
 
 pub unsafe fn schedule() {
     if SCHED_LOCK.locked.swap(true, Ordering::Acquire) { return; }
+    let cur_tick = crate::perm::TICK;
+    for i in 0..MAX_THREADS {
+        let t = &mut THREADS[i];
+        if t.state == TS::Block && t.wake_tick != 0 && cur_tick >= t.wake_tick {
+            t.wake_tick = 0;
+            t.state = TS::Ready;
+        }
+    }
     let cur  = CUR.load(Ordering::Relaxed);
     let mut next = cur;
     for _ in 0..MAX_THREADS {
@@ -246,6 +257,7 @@ pub unsafe fn schedule() {
         SCHED_LOCK.locked.store(false, Ordering::Release);
         return;
     }
+    
     if THREADS[cur].state == TS::Run { THREADS[cur].state = TS::Ready; }
     THREADS[next].state = TS::Run;
     THREADS[next].ticks += 1;
