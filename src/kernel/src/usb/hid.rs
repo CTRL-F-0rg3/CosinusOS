@@ -181,40 +181,40 @@ pub fn classify(cfg: &ParsedConfig, speed: u8) -> DevClass {
 // HID Usage ID → ASCII (Normal + Shift)
 // Rozmiar 104 (Usage 0x00 .. 0x67)
 static HID_NORM: [u8; 104] = [
-    0,0,0,0,
-    b'a',b'b',b'c',b'd',b'e',b'f',b'g',b'h',b'i',b'j',b'k',b'l',
-    b'm',b'n',b'o',b'p',b'q',b'r',b's',b't',b'u',b'v',b'w',b'x',b'y',b'z',
-    b'1',b'2',b'3',b'4',b'5',b'6',b'7',b'8',b'9',b'0',
-    b'\n',b'\x1b',b'\x08',b'\t',b' ',
-    b'-',b'=',b'[',b']',b'\\',0,b';',b'\'',b'`',b',',b'.',b'/',
-    0,           // 0x39 CapsLock
-    0,0,0,0,0,0,0,0,0,0,0,0, // 0x3A-0x45 F1-F12
-    0,0,0,0,     // 0x46 PrintScr, ScrollLock, Pause, Insert
-    0,0,0,0,     // 0x4A Home, PageUp, Delete, End
-    0,0,         // 0x4F PageDown, RightArrow
-    0,0,0,0,     // 0x50 LeftArrow, DownArrow, UpArrow, NumLock
-    0,0,0,0,0,0,0,0,0, // Numpad /,*,-,+,Enter,1-3
-    0,0,0,0,0,0,0,     // Numpad 4-9,0
-    0,           // Numpad .
-    0,0,0,       // Application, Power, = (numpad)
+/*00*/ 0,0,0,0,
+/*04*/ b'a',b'b',b'c',b'd',b'e',b'f',b'g',b'h',b'i',b'j',b'k',b'l',b'm',b'n',b'o',b'p',
+/*14*/ b'q',b'r',b's',b't',b'u',b'v',b'w',b'x',b'y',b'z',
+/*1E*/ b'1',b'2',b'3',b'4',b'5',b'6',b'7',b'8',b'9',b'0',
+/*28*/ b'\n',b'\x1b',b'\x08',b'\t',b' ',
+/*2D*/ b'-',b'=',b'[',b']',b'\\',0,b';',b'\'',b'`',b'\x2C',b'.',b'/',
+/*39*/ 0,
+/*3A*/ 0,0,0,0,0,0,0,0,0,0,0,0,
+/*46*/ 0,0,0,0,
+/*4A*/ 0,0,0,0,
+/*4E*/ 0,0,
+/*50*/ 0,0,0,0,
+/*54*/ 0,0,0,0,0,0,0,0,0,
+/*5D*/ 0,0,0,0,0,0,0,
+/*64*/ 0,0,0,0,
 ];
 
 static HID_SHFT: [u8; 104] = [
-    0,0,0,0,
-    b'A',b'B',b'C',b'D',b'E',b'F',b'G',b'H',b'I',b'J',b'K',b'L',
-    b'M',b'N',b'O',b'P',b'Q',b'R',b'S',b'T',b'U',b'V',b'W',b'X',b'Y',b'Z',
-    b'!',b'@',b'#',b'$',b'%',b'^',b'&',b'*',b'(',b')',
-    b'\n',b'\x1b',b'\x08',b'\t',b' ',
-    b'_',b'+',b'{',b'}',b'|',0,b':',b'"',b'~',b'<',b'>',b'?',
-    0,
-    0,0,0,0,0,0,0,0,0,0,0,0,
-    0,0,0,0,
-    0,0,0,0,
-    0,0,
-    0,0,0,0,0,0,0,0,0,
-    0,0,0,0,0,0,0,
-    0,
-    0,0,0,
+    0,0,0,0,                                                    // 0x00-0x03
+    b'A',b'B',b'C',b'D',b'E',b'F',b'G',b'H',b'I',b'J',b'K',b'L', // 0x04-0x0F
+    b'M',b'N',b'O',b'P',b'Q',b'R',b'S',b'T',b'U',b'V',b'W',b'X',b'Y',b'Z', // 0x10-0x1D
+    b'!',b'@',b'#',b'$',b'%',b'^',b'&',b'*',b'(',b')',        // 0x1E-0x27
+    b'\n',b'\x1b',b'\x08',b'\t',b' ',                          // 0x28-0x2C
+    b'_',b'+',b'{',b'}',b'|',0,b':',b'"',b'~',b'<',b'>',b'?', // 0x2D-0x38
+    0,                                                           // 0x39 CapsLock
+    0,0,0,0,0,0,0,0,0,0,0,0,                                    // 0x3A-0x45 F1-F12
+    0,0,0,0,                                                     // 0x46-0x49
+    0,0,0,0,                                                     // 0x4A-0x4D
+    0,0,                                                         // 0x4E-0x4F
+    0,0,0,0,                                                     // 0x50-0x53
+    0,0,0,0,0,0,0,0,0,                                          // 0x54-0x5C
+    0,0,0,0,0,0,0,                                              // 0x5D-0x63
+    0,0,0,                                                      // 0x64-0x66
+    0,                                                          // 0x67 pad
 ];
 
 static mut PREV_KB: [u8; 8] = [0u8; 8];

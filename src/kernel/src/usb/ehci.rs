@@ -703,6 +703,7 @@ struct OhciPort {
     td_intr: u64, // Interrupt TD
     buf:     u64,
     addr:    u8,
+    speed:   u8,
     ep_in:   u8,
     ep_mps:  u16,
     toggle:  bool,
@@ -710,7 +711,7 @@ struct OhciPort {
 
 impl OhciPort { const fn empty() -> Self {
     Self { active:false, dev_idx:0xFF, ed_intr:0, td_intr:0, buf:0,
-           addr:0, ep_in:1, ep_mps:8, toggle:false } } }
+           addr:0, speed:0, ep_in:1, ep_mps:8, toggle:false } } }
 
 pub struct Ohci {
     base:     u64,
