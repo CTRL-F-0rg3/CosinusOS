@@ -72,3 +72,4 @@ The following tools are already functional and awaiting integration with the sys
 ### Option 1: QEMU (Recommended for testing)
 you download the iso and you can do everything in the machine's graphical interface (additional module)
 
+MIT License 2026
