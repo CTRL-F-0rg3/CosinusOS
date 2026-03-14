@@ -304,9 +304,10 @@ isr_no_err!(isr_kb, handle_kb);
 
 #[no_mangle]
 pub unsafe extern "C" fn handle_kb(_: *mut TF) {
-    use crate::debug::inb;
+    use crate::debug::{inb, serial_print, serial_hex};
     let sc = inb(0x60);
     outb(0x20, 0x20);
+    serial_print("[KB] sc="); serial_hex(sc as u64); serial_print("\n");
     match sc {
         0x2A | 0x36 => { KB_SHIFT = true;  return; }
         0xAA | 0xB6 => { KB_SHIFT = false; return; }

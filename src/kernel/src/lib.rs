@@ -14,9 +14,9 @@ pub mod threading;
 pub mod userspace_loader;
 pub mod syscall_api;
 pub mod ipc;
-pub mod usb;       // src/kernel/src/usb/mod.rs  (usuń stary usb.rs!)
-pub mod display;   // src/kernel/src/display/mod.rs
-pub mod kterminal; // src/kernel/src/kterminal.rs
+pub mod usb;
+pub mod display;
+pub mod kterminal;
 
 pub use mm::{PhysAddr, VirtAddr, PAGE_SIZE, PTE_W, PTE_U};
 pub use mm::{mm_alloc, mm_free_phys, mm_free_kb, mm_used_kb, mm_total_kb};
@@ -55,6 +55,72 @@ fn panic(info: &PanicInfo) -> ! {
     loop { unsafe { asm!("hlt", options(nomem, nostack)); } }
 }
 
+// ── 8042 PS/2 controller init ─────────────────────────────────────────────────
+unsafe fn init_ps2() {
+    use debug::{inb, outb, serial_print, hex_str};
+
+    let status = inb(0x64);
+    serial_print("[8042] status=");
+    { let mut b = [0u8;18]; serial_print(hex_str(status as u64, &mut b)); }
+    serial_print("\n");
+
+    if status == 0xFF {
+        serial_print("[8042] brak kontrolera PS/2\n");
+        return;
+    }
+
+    // Opróżnij output buffer
+    if status & 0x01 != 0 { let _ = inb(0x60); }
+
+    // Disable port 1 na czas konfiguracji
+    while inb(0x64) & 0x02 != 0 {}
+    outb(0x64, 0xAD);
+
+    // Odczytaj Configuration Byte
+    while inb(0x64) & 0x02 != 0 {}
+    outb(0x64, 0x20);
+    while inb(0x64) & 0x01 == 0 {}
+    let mut cfg = inb(0x60);
+    serial_print("[8042] cfg=");
+    { let mut b = [0u8;18]; serial_print(hex_str(cfg as u64, &mut b)); }
+    serial_print("\n");
+
+    // IRQ1 enable (bit0=1), wyłącz translation (bit6=0)
+    cfg |= 0x01;
+    cfg &= !0x40;
+
+    // Zapisz Configuration Byte
+    while inb(0x64) & 0x02 != 0 {}
+    outb(0x64, 0x60);
+    while inb(0x64) & 0x02 != 0 {}
+    outb(0x60, cfg);
+
+    // Enable port 1
+    while inb(0x64) & 0x02 != 0 {}
+    outb(0x64, 0xAE);
+
+    // Reset klawiatury
+    while inb(0x64) & 0x02 != 0 {}
+    outb(0x60, 0xFF);
+
+    // Czekaj na BAT (0xAA)
+    let mut tries = 0usize;
+    loop {
+        if inb(0x64) & 0x01 != 0 {
+            let r = inb(0x60);
+            serial_print("[8042] resp=");
+            { let mut b = [0u8;18]; serial_print(hex_str(r as u64, &mut b)); }
+            serial_print("\n");
+            if r == 0xAA { break; }
+        }
+        tries += 1;
+        if tries > 100_000 { serial_print("[8042] timeout\n"); break; }
+        for _ in 0..10 { core::hint::spin_loop(); }
+    }
+
+    serial_print("[8042] OK\n");
+}
+
 // ── kernel_main ───────────────────────────────────────────────────────────────
 #[no_mangle]
 pub extern "C" fn kernel_main(mb_magic: u64, mb_info: u64) -> ! {
@@ -84,22 +150,26 @@ pub extern "C" fn kernel_main(mb_magic: u64, mb_info: u64) -> ! {
         threading::sched_init();  debug::log_ok("Scheduler (idle thread)", true);
         perm::init_pit();         debug::log_ok("PIT 100Hz", true);
 
-        // ── 5. Display (framebuffer HDMI/DP, fallback VGA) ───────────────────
+        // ── 5. PS/2 (po sched_init żeby TSS.rsp0 był ustawiony) ──────────────
+        init_ps2();
+        debug::log_ok("PS/2 8042", true);
+
+        // ── 6. Display ───────────────────────────────────────────────────────
         let disp_ok = display::display_init();
         debug::log_ok("Display HDMI/DP", disp_ok);
 
-        // ── 6. USB ───────────────────────────────────────────────────────────
+        // ── 7. USB ───────────────────────────────────────────────────────────
         let usb_ok = usb::usb_init();
         debug::log_ok("USB XHCI/EHCI/OHCI + HID", usb_ok);
         if usb_ok {
             spawn_k("usb\0", usb::usb_thread as *const () as u64, 0);
         }
 
-        // ── 7. Kernel terminal ───────────────────────────────────────────────
+        // ── 8. Kernel terminal ───────────────────────────────────────────────
         spawn_k("kterminal\0", kterminal::run as *const () as u64, 0);
         debug::log_ok("Kernel terminal (PS/2 + COM1)", true);
 
-        // ── 8. Userspace ─────────────────────────────────────────────────────
+        // ── 9. Userspace ─────────────────────────────────────────────────────
         print("\n");
         printc("=== Userspace ===\n", col::YELLOW);
 
@@ -128,7 +198,7 @@ pub extern "C" fn kernel_main(mb_magic: u64, mb_info: u64) -> ! {
             print("\n");
         }
 
-        // ── 9. Info systemowe ────────────────────────────────────────────────
+        // ── 10. Info systemowe ───────────────────────────────────────────────
         print("\n");
         printc("=== system ===\n", col::YELLOW);
         print("  memory: ");
