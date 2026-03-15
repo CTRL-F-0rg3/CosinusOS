@@ -1,10 +1,8 @@
 const std = @import("std");
-
 pub fn build(b: *std.Build) void {
     const debug = b.option(bool, "debug", "QEMU: loguj przerwania") orelse false;
     const qemu_wait_gdb = b.option(bool, "gdb", "QEMU: czekaj na GDB") orelse false;
     const skip_qemu = b.option(bool, "no-run", "Nie uruchamiaj QEMU") orelse false;
-
     const build_dir = "build";
     const iso_root = "iso";
 
@@ -66,17 +64,21 @@ pub fn build(b: *std.Build) void {
         "stdio",
         "-vga",
         "std",
+        "-display",
+        "sdl",
         "-cpu",
         "qemu64",
         "-smp",
         "2",
         "-no-reboot",
     }) catch unreachable;
+
     if (debug) args.appendSlice(b.allocator, &.{
         "-d",           "int,guest_errors,cpu_reset",
         "-D",           build_dir ++ "/qemu-debug.log",
         "-no-shutdown",
     }) catch unreachable;
+
     if (qemu_wait_gdb) args.appendSlice(b.allocator, &.{ "-s", "-S" }) catch unreachable;
 
     const qemu_run = b.addSystemCommand(args.items);
