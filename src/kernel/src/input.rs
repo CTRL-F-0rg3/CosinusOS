@@ -8,7 +8,7 @@ use crate::debug::{inb, outb, serial_print, serial_hex, hex_str};
 // § Scan Code Set 2 → ASCII
 // ════════════════════════════════════════════════════════════════════════════
 
-static SC2_NORM: [u8; 132] = [
+static SC2_NORM: [u8; 131] = [
 /*00*/ 0,
 /*01*/ 0,       // F9
 /*02*/ 0,
@@ -74,7 +74,7 @@ static SC2_NORM: [u8; 132] = [
 /*3E*/ b'8',
 /*3F*/ 0,
 /*40*/ 0,
-/*41*/ b',',
+/*41*/ b'\x2C',
 /*42*/ b'k',
 /*43*/ b'i',
 /*44*/ b'o',
