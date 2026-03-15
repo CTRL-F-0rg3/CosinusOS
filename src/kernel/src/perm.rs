@@ -123,13 +123,12 @@ static mut IDTR: Idtr             = Idtr { lim: 0, base: 0 };
 pub unsafe fn init_idt() {
     use crate::threading::syscall_handler;
 
-    IDT[0x08] = IdtE::new(isr_df    as *const () as u64, 0x08, 0, 1); // #DF IST1
-    IDT[0x0D] = IdtE::new(isr_gp    as *const () as u64, 0x08, 0, 0); // #GP
-    IDT[0x0E] = IdtE::new(isr_pf    as *const () as u64, 0x08, 0, 0); // #PF
-    IDT[0x20] = IdtE::new(isr_tmr   as *const () as u64, 0x08, 0, 0); // IRQ0 timer
-    IDT[0x21] = IdtE::new(isr_kb    as *const () as u64, 0x08, 0, 0); // IRQ1 keyboard
-    IDT[0x2C] = IdtE::new(isr_mouse as *const () as u64, 0x08, 0, 0); // IRQ12 mouse
-    IDT[0x80] = IdtE::new(syscall_handler as *const () as u64, 0x08, 3, 0); // int 0x80 DPL=3
+    IDT[0x08] = IdtE::new(isr_df  as *const () as u64, 0x08, 0, 1); // #DF IST1
+    IDT[0x0D] = IdtE::new(isr_gp  as *const () as u64, 0x08, 0, 0); // #GP
+    IDT[0x0E] = IdtE::new(isr_pf  as *const () as u64, 0x08, 0, 0); // #PF
+    IDT[0x20] = IdtE::new(isr_tmr as *const () as u64, 0x08, 0, 0); // IRQ0 timer
+    IDT[0x21] = IdtE::new(isr_kb  as *const () as u64, 0x08, 0, 0); // IRQ1 keyboard
+    IDT[0x80] = IdtE::new(syscall_handler as *const () as u64, 0x08, 3, 0); // int 0x80
 
     IDTR.lim  = (core::mem::size_of::<[IdtE; IDT_LEN]>() - 1) as u16;
     IDTR.base = IDT.as_ptr() as u64;
@@ -143,10 +142,10 @@ pub unsafe fn init_pic() {
     outb(0x21, 0x20); io_wait(); outb(0xA1, 0x28); io_wait();
     outb(0x21, 0x04); io_wait(); outb(0xA1, 0x02); io_wait();
     outb(0x21, 0x01); io_wait(); outb(0xA1, 0x01); io_wait();
-    // Master: IRQ0 (timer) + IRQ1 (kbd) + IRQ2 (cascade) odblokowane
-    outb(0x21, 0xF8);
-    // Slave: IRQ12 (mouse) odblokowane, reszta zamaskowana
-    outb(0xA1, 0xEF);
+    // Master: IRQ0 (timer) + IRQ1 (kbd) odblokowane, reszta zamaskowana
+    outb(0x21, 0xFC);
+    // Slave: wszystko zamaskowane (nie używamy myszy w kernel)
+    outb(0xA1, 0xFF);
 }
 
 // ── PIT ──────────────────────────────────────────────────────────────────────
@@ -276,18 +275,8 @@ isr_no_err!(isr_kb, handle_kb);
 
 #[no_mangle]
 pub unsafe extern "C" fn handle_kb(_: *mut TF) {
-    outb(0x20, 0x20); // EOI master PIC
+    outb(0x20, 0x20); // EOI
     crate::input::kbd_irq();
-}
-
-// ── Mouse IRQ12 ───────────────────────────────────────────────────────────────
-isr_no_err!(isr_mouse, handle_mouse);
-
-#[no_mangle]
-pub unsafe extern "C" fn handle_mouse(_: *mut TF) {
-    outb(0xA0, 0x20); // EOI slave PIC
-    outb(0x20, 0x20); // EOI master PIC
-    crate::input::mouse_irq();
 }
 
 // ── Syscall int 0x80 ──────────────────────────────────────────────────────────
@@ -298,14 +287,11 @@ pub unsafe extern "C" fn handle_syscall(f: *mut TF) {
     crate::syscall_api::syscall_dispatch_v2(f);
 }
 
-// ── Publiczne API dla kompatybilności ─────────────────────────────────────────
-
-/// Wrapper dla kterminal.rs i innych modułów
+// ── Publiczne API ─────────────────────────────────────────────────────────────
 pub unsafe fn kb_pop() -> Option<char> {
     crate::input::input_poll()
 }
 
-/// Wrapper dla USB HID
 pub unsafe fn kb_push_pub(c: char) {
     crate::input::input_push(c);
 }
