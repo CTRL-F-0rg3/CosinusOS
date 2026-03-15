@@ -10,6 +10,7 @@ pub mod sync;
 pub mod debug;
 pub mod mm;
 pub mod perm;
+pub mod input;
 pub mod threading;
 pub mod userspace_loader;
 pub mod syscall_api;
@@ -55,72 +56,6 @@ fn panic(info: &PanicInfo) -> ! {
     loop { unsafe { asm!("hlt", options(nomem, nostack)); } }
 }
 
-// ── 8042 PS/2 controller init ─────────────────────────────────────────────────
-unsafe fn init_ps2() {
-    use debug::{inb, outb, serial_print, hex_str};
-
-    let status = inb(0x64);
-    serial_print("[8042] status=");
-    { let mut b = [0u8;18]; serial_print(hex_str(status as u64, &mut b)); }
-    serial_print("\n");
-
-    if status == 0xFF {
-        serial_print("[8042] brak kontrolera PS/2\n");
-        return;
-    }
-
-    // Opróżnij output buffer
-    if status & 0x01 != 0 { let _ = inb(0x60); }
-
-    // Disable port 1 na czas konfiguracji
-    while inb(0x64) & 0x02 != 0 {}
-    outb(0x64, 0xAD);
-
-    // Odczytaj Configuration Byte
-    while inb(0x64) & 0x02 != 0 {}
-    outb(0x64, 0x20);
-    while inb(0x64) & 0x01 == 0 {}
-    let mut cfg = inb(0x60);
-    serial_print("[8042] cfg=");
-    { let mut b = [0u8;18]; serial_print(hex_str(cfg as u64, &mut b)); }
-    serial_print("\n");
-
-    // IRQ1 enable (bit0=1), wyłącz translation (bit6=0)
-    cfg |= 0x01;
-    cfg &= !0x40;
-
-    // Zapisz Configuration Byte
-    while inb(0x64) & 0x02 != 0 {}
-    outb(0x64, 0x60);
-    while inb(0x64) & 0x02 != 0 {}
-    outb(0x60, cfg);
-
-    // Enable port 1
-    while inb(0x64) & 0x02 != 0 {}
-    outb(0x64, 0xAE);
-
-    // Reset klawiatury
-    while inb(0x64) & 0x02 != 0 {}
-    outb(0x60, 0xFF);
-
-    // Czekaj na BAT (0xAA)
-    let mut tries = 0usize;
-    loop {
-        if inb(0x64) & 0x01 != 0 {
-            let r = inb(0x60);
-            serial_print("[8042] resp=");
-            { let mut b = [0u8;18]; serial_print(hex_str(r as u64, &mut b)); }
-            serial_print("\n");
-            if r == 0xAA { break; }
-        }
-        tries += 1;
-        if tries > 100_000 { serial_print("[8042] timeout\n"); break; }
-        for _ in 0..10 { core::hint::spin_loop(); }
-    }
-
-    serial_print("[8042] OK\n");
-}
-
 // ── kernel_main ───────────────────────────────────────────────────────────────
 #[no_mangle]
 pub extern "C" fn kernel_main(mb_magic: u64, mb_info: u64) -> ! {
@@ -144,15 +79,15 @@ pub extern "C" fn kernel_main(mb_magic: u64, mb_info: u64) -> ! {
         // ── 3. CPU ───────────────────────────────────────────────────────────
         perm::init_gdt(); debug::log_ok("GDT", true);
         perm::init_pic(); debug::log_ok("PIC", true);
-        perm::init_idt(); debug::log_ok("IDT + IRQ1 keyboard", true);
+        perm::init_idt(); debug::log_ok("IDT + IRQ1 + IRQ12", true);
 
         // ── 4. Scheduler ─────────────────────────────────────────────────────
-        threading::sched_init();  debug::log_ok("Scheduler (idle thread)", true);
-        perm::init_pit();         debug::log_ok("PIT 100Hz", true);
+        threading::sched_init(); debug::log_ok("Scheduler (idle thread)", true);
+        perm::init_pit();        debug::log_ok("PIT 100Hz", true);
 
-        // ── 5. PS/2 (po sched_init żeby TSS.rsp0 był ustawiony) ──────────────
-        init_ps2();
-        debug::log_ok("PS/2 8042", true);
+        // ── 5. PS/2 — po sched_init żeby TSS.rsp0 był ustawiony ──────────────
+        input::init_ps2();
+        debug::log_ok("PS/2 keyboard + mouse", true);
 
         // ── 6. Display ───────────────────────────────────────────────────────
         let disp_ok = display::display_init();

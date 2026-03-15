@@ -123,12 +123,12 @@ static mut IDTR: Idtr             = Idtr { lim: 0, base: 0 };
 pub unsafe fn init_idt() {
     use crate::threading::syscall_handler;
 
-    IDT[0x08] = IdtE::new(isr_df  as *const () as u64, 0x08, 0, 1); // #DF IST1
-    IDT[0x0D] = IdtE::new(isr_gp  as *const () as u64, 0x08, 0, 0); // #GP
-    IDT[0x0E] = IdtE::new(isr_pf  as *const () as u64, 0x08, 0, 0); // #PF
-    IDT[0x20] = IdtE::new(isr_tmr as *const () as u64, 0x08, 0, 0); // IRQ0 timer
-    IDT[0x21] = IdtE::new(isr_kb  as *const () as u64, 0x08, 0, 0); // IRQ1 keyboard
-    // FIXED: usunięty duplikat set_idt_gate (nie istnieje) — używamy IdtE::new z DPL=3
+    IDT[0x08] = IdtE::new(isr_df    as *const () as u64, 0x08, 0, 1); // #DF IST1
+    IDT[0x0D] = IdtE::new(isr_gp    as *const () as u64, 0x08, 0, 0); // #GP
+    IDT[0x0E] = IdtE::new(isr_pf    as *const () as u64, 0x08, 0, 0); // #PF
+    IDT[0x20] = IdtE::new(isr_tmr   as *const () as u64, 0x08, 0, 0); // IRQ0 timer
+    IDT[0x21] = IdtE::new(isr_kb    as *const () as u64, 0x08, 0, 0); // IRQ1 keyboard
+    IDT[0x2C] = IdtE::new(isr_mouse as *const () as u64, 0x08, 0, 0); // IRQ12 mouse
     IDT[0x80] = IdtE::new(syscall_handler as *const () as u64, 0x08, 3, 0); // int 0x80 DPL=3
 
     IDTR.lim  = (core::mem::size_of::<[IdtE; IDT_LEN]>() - 1) as u16;
@@ -143,7 +143,10 @@ pub unsafe fn init_pic() {
     outb(0x21, 0x20); io_wait(); outb(0xA1, 0x28); io_wait();
     outb(0x21, 0x04); io_wait(); outb(0xA1, 0x02); io_wait();
     outb(0x21, 0x01); io_wait(); outb(0xA1, 0x01); io_wait();
-    outb(0x21, 0xFC); outb(0xA1, 0xFF);
+    // Master: IRQ0 (timer) + IRQ1 (kbd) + IRQ2 (cascade) odblokowane
+    outb(0x21, 0xF8);
+    // Slave: IRQ12 (mouse) odblokowane, reszta zamaskowana
+    outb(0xA1, 0xEF);
 }
 
 // ── PIT ──────────────────────────────────────────────────────────────────────
@@ -212,11 +215,11 @@ pub unsafe extern "C" fn handle_df(f: *mut TF) {
     let cr2: u64;
     asm!("mov {}, cr2", out(reg) cr2, options(nomem, nostack));
     print_raw("\n[#DF] DOUBLE FAULT\n");
-    print_raw("  RIP="); { let mut b=[0u8;18]; print_raw(hex_str((*f).rip,    &mut b)); }
-    print_raw("  RSP="); { let mut b=[0u8;18]; print_raw(hex_str((*f).rsp,    &mut b)); }
-    print_raw("  CR2="); { let mut b=[0u8;18]; print_raw(hex_str(cr2,          &mut b)); }
-    print_raw("   CS="); { let mut b=[0u8;18]; print_raw(hex_str((*f).cs,     &mut b)); }
-    print_raw("   SS="); { let mut b=[0u8;18]; print_raw(hex_str((*f).ss,     &mut b)); }
+    print_raw("  RIP="); { let mut b=[0u8;18]; print_raw(hex_str((*f).rip, &mut b)); }
+    print_raw("  RSP="); { let mut b=[0u8;18]; print_raw(hex_str((*f).rsp, &mut b)); }
+    print_raw("  CR2="); { let mut b=[0u8;18]; print_raw(hex_str(cr2,      &mut b)); }
+    print_raw("   CS="); { let mut b=[0u8;18]; print_raw(hex_str((*f).cs,  &mut b)); }
+    print_raw("   SS="); { let mut b=[0u8;18]; print_raw(hex_str((*f).ss,  &mut b)); }
     print_raw("\n");
     loop { asm!("hlt", options(nomem, nostack)); }
 }
@@ -229,11 +232,11 @@ pub unsafe extern "C" fn handle_gp(f: *mut TF) {
     let err = (*f).rax;
     let rip = (*f).rip;
     printc("\n[#GP] GENERAL PROTECTION FAULT\n", col::LRED);
-    print("  err=");    { let mut b=[0u8;18]; print(hex_str(err,        &mut b)); }
-    print("  rip=");    { let mut b=[0u8;18]; print(hex_str(rip,        &mut b)); }
-    print("   cs=");    { let mut b=[0u8;18]; print(hex_str((*f).cs,    &mut b)); }
-    print("  rsp=");    { let mut b=[0u8;18]; print(hex_str((*f).rsp,   &mut b)); }
-    print("   ss=");    { let mut b=[0u8;18]; print(hex_str((*f).ss,    &mut b)); }
+    print("  err="); { let mut b=[0u8;18]; print(hex_str(err,      &mut b)); }
+    print("  rip="); { let mut b=[0u8;18]; print(hex_str(rip,      &mut b)); }
+    print("   cs="); { let mut b=[0u8;18]; print(hex_str((*f).cs,  &mut b)); }
+    print("  rsp="); { let mut b=[0u8;18]; print(hex_str((*f).rsp, &mut b)); }
+    print("   ss="); { let mut b=[0u8;18]; print(hex_str((*f).ss,  &mut b)); }
     print("\n");
     crate::panic_no_dyn("Unhandled #GP");
 }
@@ -248,9 +251,9 @@ pub unsafe extern "C" fn handle_pf(f: *mut TF) {
     let addr: u64;
     asm!("mov {}, cr2", out(reg) addr, options(nomem, nostack));
     printc("\n[#PF] PAGE FAULT\n", col::YELLOW);
-    print("  addr="); { let mut b=[0u8;18]; print(hex_str(addr,&mut b)); }
-    print("  err=");  { let mut b=[0u8;18]; print(hex_str(err, &mut b)); }
-    print("  rip=");  { let mut b=[0u8;18]; print(hex_str(rip, &mut b)); }
+    print("  addr="); { let mut b=[0u8;18]; print(hex_str(addr, &mut b)); }
+    print("  err=");  { let mut b=[0u8;18]; print(hex_str(err,  &mut b)); }
+    print("  rip=");  { let mut b=[0u8;18]; print(hex_str(rip,  &mut b)); }
     print(if err & 4 != 0 { " USR" } else { " KRN" });
     print(if err & 2 != 0 { " W\n" } else { " R\n" });
     crate::panic_no_dyn("Unhandled page fault");
@@ -269,56 +272,22 @@ pub unsafe extern "C" fn handle_timer(_: *mut TF) {
 }
 
 // ── Keyboard IRQ1 ─────────────────────────────────────────────────────────────
-const SCANMAP_NORM: [char; 59] = [
-    '\0','\x1b','1','2','3','4','5','6','7','8','9','0','-','=','\x08',
-    '\t','q','w','e','r','t','y','u','i','o','p','[',']','\n',
-    '\0','a','s','d','f','g','h','j','k','l',';','\'','`',
-    '\0','\\','z','x','c','v','b','n','m',',','.','/','\0','*','\0',' ','\0',
-];
-const SCANMAP_SHIFT: [char; 59] = [
-    '\0','\x1b','!','@','#','$','%','^','&','*','(',')','_','+','\x08',
-    '\t','Q','W','E','R','T','Y','U','I','O','P','{','}','\n',
-    '\0','A','S','D','F','G','H','J','K','L',':','"','~',
-    '\0','|','Z','X','C','V','B','N','M','<','>','?','\0','*','\0',' ','\0',
-];
-
-const KB_BUF_SIZE: usize = 64;
-static mut KB_BUF:   [char; KB_BUF_SIZE] = ['\0'; KB_BUF_SIZE];
-static mut KB_HEAD:  usize = 0;
-static mut KB_TAIL:  usize = 0;
-static mut KB_SHIFT: bool  = false;
-
-unsafe fn kb_push(c: char) {
-    let next = (KB_HEAD + 1) % KB_BUF_SIZE;
-    if next != KB_TAIL { KB_BUF[KB_HEAD] = c; KB_HEAD = next; }
-}
-
-pub unsafe fn kb_pop() -> Option<char> {
-    if KB_HEAD == KB_TAIL { return None; }
-    let c = KB_BUF[KB_TAIL];
-    KB_TAIL = (KB_TAIL + 1) % KB_BUF_SIZE;
-    Some(c)
-}
-
 isr_no_err!(isr_kb, handle_kb);
 
 #[no_mangle]
 pub unsafe extern "C" fn handle_kb(_: *mut TF) {
-    use crate::debug::{inb, serial_print, serial_hex};
-    let sc = inb(0x60);
-    outb(0x20, 0x20);
-    serial_print("[KB] sc="); serial_hex(sc as u64); serial_print("\n");
-    match sc {
-        0x2A | 0x36 => { KB_SHIFT = true;  return; }
-        0xAA | 0xB6 => { KB_SHIFT = false; return; }
-        _ => {}
-    }
-    if sc & 0x80 != 0 { return; }
-    let idx = sc as usize;
-    if idx < SCANMAP_NORM.len() {
-        let c = if KB_SHIFT { SCANMAP_SHIFT[idx] } else { SCANMAP_NORM[idx] };
-        if c != '\0' { kb_push(c); }
-    }
+    outb(0x20, 0x20); // EOI master PIC
+    crate::input::kbd_irq();
+}
+
+// ── Mouse IRQ12 ───────────────────────────────────────────────────────────────
+isr_no_err!(isr_mouse, handle_mouse);
+
+#[no_mangle]
+pub unsafe extern "C" fn handle_mouse(_: *mut TF) {
+    outb(0xA0, 0x20); // EOI slave PIC
+    outb(0x20, 0x20); // EOI master PIC
+    crate::input::mouse_irq();
 }
 
 // ── Syscall int 0x80 ──────────────────────────────────────────────────────────
@@ -329,4 +298,14 @@ pub unsafe extern "C" fn handle_syscall(f: *mut TF) {
     crate::syscall_api::syscall_dispatch_v2(f);
 }
 
-pub unsafe fn kb_push_pub(c: char) { kb_push(c); }
+// ── Publiczne API dla kompatybilności ─────────────────────────────────────────
+
+/// Wrapper dla kterminal.rs i innych modułów
+pub unsafe fn kb_pop() -> Option<char> {
+    crate::input::input_poll()
+}
+
+/// Wrapper dla USB HID
+pub unsafe fn kb_push_pub(c: char) {
+    crate::input::input_push(c);
+}
