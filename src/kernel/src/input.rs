@@ -370,6 +370,11 @@ pub unsafe fn init_ps2() {
     serial_print("[PS2] status="); serial_hex(st as u64); serial_print("\n");
     if st == 0xFF { serial_print("[PS2] brak kontrolera\n"); return; }
 
+    // Maskuj IRQ1 w PIC żeby handler nie kradł bajtów podczas pollingu
+    let pic_mask = inb(0x21);
+    outb(0x21, pic_mask | 0x02);
+    serial_print("[PS2] IRQ1 masked\n");
+
     // Disable obu portów
     ps2_wait_ibuf(); outb(0x64, 0xAD);
     ps2_wait_ibuf(); outb(0x64, 0xA7);
@@ -450,6 +455,10 @@ pub unsafe fn init_ps2() {
     let ack_f4 = kbd_cmd(0xF4, 3);
     serial_print(if ack_f4 { "[PS2] scanning ON\n" } else { "[PS2] scanning FAIL\n" });
     ps2_flush();
+
+    // Włącz IRQ1 z powrotem
+    outb(0x21, inb(0x21) & !0x02);
+    serial_print("[PS2] IRQ1 unmasked\n");
 
     serial_print("[PS2] === init done ===\n");
 }
