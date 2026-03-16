@@ -68,11 +68,10 @@ pub struct Thread {
     pub cr3:          PhysAddr,
     pub name:         [u8; 16],
     pub ticks:        u64,
-    // ── Nowe pola ─────────────────────────────────────────────────────────────
-    pub valloc:       VAddrSpace,      // wirtualny allocator przestrzeni adresowej
-    pub sig_handlers: [u64; 32],       // handlery sygnałów (0 = domyślny = zakończ)
-    pub sig_pending:  u64,             // bitmaska oczekujących sygnałów
-    pub cwd:          [u8; 256],       // bieżący katalog roboczy (null-terminated)
+    pub valloc:       VAddrSpace,
+    pub sig_handlers: [u64; 32],
+    pub sig_pending:  u64,
+    pub cwd:          [u8; 256],
 }
 
 impl Thread {
@@ -80,8 +79,7 @@ impl Thread {
         Self {
             id: 0, state: TS::Dead, prio: 10,
             krsp: 0, ktop: 0, utop: 0, cr3: 0,
-            name: [0; 16], ticks: 0,
-            wake_tick: 0,
+            name: [0; 16], ticks: 0, wake_tick: 0,
             valloc:       VAddrSpace::new(),
             sig_handlers: [0u64; 32],
             sig_pending:  0,
@@ -137,8 +135,10 @@ pub unsafe fn spawn_k(name: &str, entry: u64, arg: u64) -> i32 {
         t.state = TS::Ready;
         let mut buf = [0u8; 24];
         print("  [T#"); print(num_str(i, &mut buf)); print("] "); print(name); print("\n");
+        asm!("sti", options(nomem, nostack));
         return i as i32;
     }
+    asm!("sti", options(nomem, nostack));
     -1
 }
 
@@ -168,45 +168,23 @@ pub unsafe fn spawn_user_on_cr3(name: &str, entry: u64, arg: u64, cr3: PhysAddr)
         t.ktop = kt; t.utop = ut; t.cr3 = cr3; t.ticks = 0;
         init_thread_stack(t, kt, ut, entry, arg, true);
 
-        {
-            let ksp = t.krsp;
-            serial_print("[DBG] krsp=");         serial_hex(ksp);
-            serial_print(" kt=");                serial_hex(kt);
-            serial_print("\n");
-            serial_print("[DBG] [+0 ] r15 =");   serial_hex(*((ksp+0)  as *const u64));
-            serial_print("\n");
-            serial_print("[DBG] [+8 ] r14 =");   serial_hex(*((ksp+8)  as *const u64));
-            serial_print("\n");
-            serial_print("[DBG] [+16] r13 =");   serial_hex(*((ksp+16) as *const u64));
-            serial_print("\n");
-            serial_print("[DBG] [+24] r12 =");   serial_hex(*((ksp+24) as *const u64));
-            serial_print("\n");
-            serial_print("[DBG] [+32] rbp =");   serial_hex(*((ksp+32) as *const u64));
-            serial_print("\n");
-            serial_print("[DBG] [+40] rbx =");   serial_hex(*((ksp+40) as *const u64));
-            serial_print("\n");
-            serial_print("[DBG] [+48] tramp=");  serial_hex(*((ksp+48) as *const u64));
-            serial_print(" expected=");          serial_hex(tramp_u as *const () as u64);
-            serial_print("\n");
-            serial_print("[DBG] [+56] RIP =");   serial_hex(*((ksp+56) as *const u64));
-            serial_print("\n");
-            serial_print("[DBG] [+64] CS  =");   serial_hex(*((ksp+64) as *const u64));
-            serial_print("\n");
-            serial_print("[DBG] [+72] RFLAGS="); serial_hex(*((ksp+72) as *const u64));
-            serial_print("\n");
-            serial_print("[DBG] [+80] RSP =");   serial_hex(*((ksp+80) as *const u64));
-            serial_print("\n");
-            serial_print("[DBG] [+88] SS  =");   serial_hex(*((ksp+88) as *const u64));
-            serial_print("\n");
-        }
+        serial_print("[SPAWN] user thread #");
+        { let mut buf=[0u8;24]; serial_print(num_str(i, &mut buf)); }
+        serial_print(" entry="); serial_hex(entry);
+        serial_print(" ut=");    serial_hex(ut);
+        serial_print(" krsp=");  serial_hex(t.krsp);
+        serial_print(" cr3=");   serial_hex(cr3);
+        serial_print("\n");
 
         set_name(t, name);
         t.state = TS::Ready;
         NTHREADS.fetch_add(1, Ordering::Relaxed);
         let mut buf = [0u8; 24];
         print("  [T#"); print(num_str(i, &mut buf)); print("] "); print(name); print("\n");
+        asm!("sti", options(nomem, nostack));
         return i as i32;
     }
+    asm!("sti", options(nomem, nostack));
     -1
 }
 

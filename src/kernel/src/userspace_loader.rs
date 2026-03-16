@@ -154,3 +154,65 @@ unsafe fn spawn_and_report(name: &str, entry: u64, arg: u64, cr3: PhysAddr) -> b
         false
     }
 }
+// ── Embedded userspace (wbudowany w obraz kernela) ────────────────────────────
+//
+// Jak wbudować binarke:
+//
+//   1. Zbuduj userspace:
+//        cargo build --target x86_64-unknown-none --release -p userspace
+//        cp target/x86_64-unknown-none/release/userspace build/userspace.bin
+//
+//   2. Wbuduj jako sekcja .userspace w kernelu (w cosinus.ld / build.zig):
+//
+//      W linker script cosinus.ld dodaj:
+//        .userspace : ALIGN(4096) {
+//            _userspace_blob_start = .;
+//            KEEP(*(.userspace_blob))
+//            _userspace_blob_end = .;
+//        }
+//
+//      W build.zig / Makefile wygeneruj obiekt z binarki:
+//        objcopy -I binary -O elf64-x86-64 \
+//            --rename-section .data=.userspace_blob \
+//            build/userspace.bin build/userspace_blob.o
+//      I dołącz userspace_blob.o do linkowania kernela.
+//
+//   3. Gdy symbole nie istnieją (dev bez wbudowanej binarki),
+//      load_embedded() zwraca false — kernel działa tylko z kterminalem.
+//
+// Alternatywa — QEMU -initrd:
+//   Użyj GRUB lub własnego bootloadera który przekazuje initrd jako MB2 moduł.
+//   Wtedy mb2_module() znajdzie binarke i load_embedded() nie jest potrzebny.
+//   Przykład QEMU z GRUB ISO:
+//     qemu-system-x86_64 -cdrom cosinus.iso -serial stdio
+//   Przykład bez GRUB (tylko -kernel, brak MB2 modułu):
+//     qemu-system-x86_64 -kernel build/kernel.bin -initrd build/userspace.bin
+//   W tym przypadku MB2 magic może być niepoprawne — trzeba wbudować blob.
+
+unsafe extern "C" {
+    // Symbole z linker script — 0 gdy nie zdefiniowane
+    static _userspace_blob_start: u8;
+    static _userspace_blob_end:   u8;
+}
+
+/// Załaduj userspace wbudowany w obraz kernela.
+/// Zwraca true jeśli blob istnieje i uruchomienie się powiodło.
+pub unsafe fn load_embedded() -> bool {
+    let start = core::ptr::addr_of!(_userspace_blob_start) as u64;
+    let end   = core::ptr::addr_of!(_userspace_blob_end)   as u64;
+
+    if start == 0 || end <= start || (end - start) < 4 {
+        // Brak wbudowanego userspace — normalna sytuacja podczas dev
+        crate::debug::print("  Brak embedded blob (symbole = 0)\n");
+        return false;
+    }
+
+    let sz = end - start;
+    crate::debug::print("  Embedded blob @ ");
+    { let mut b = [0u8;18]; crate::debug::print(crate::debug::hex_str(start, &mut b)); }
+    crate::debug::print(" size=");
+    { let mut b = [0u8;24]; crate::debug::print(crate::debug::num_str(sz as usize, &mut b)); }
+    crate::debug::print(" B\n");
+
+    load_userspace(start, end)
+}

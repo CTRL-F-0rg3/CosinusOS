@@ -109,29 +109,52 @@ pub extern "C" fn kernel_main(mb_magic: u64, mb_info: u64) -> ! {
         print("\n");
         printc("=== Userspace ===\n", col::YELLOW);
 
-        if mb_magic == userspace_loader::MB2_OK {
-            debug::log_ok("MB2 magic", true);
-            match userspace_loader::mb2_module(mb_info) {
-                Some((s, e)) => {
-                    debug::log_ok("Modul userspace", true);
+        // ── Próba załadowania userspace ───────────────────────────────────────
+        // Kolejność priorytetu:
+        //   1. Moduł Multiboot2 (GRUB module2 /boot/userspace.bin)
+        //   2. Embedded blob w obrazie kernela (_userspace_blob_start/end)
+        //   3. Brak — kernel działa tylko z kterminalem
+
+        let loaded: bool = 'load: {
+            // ── 1. Multiboot2 moduł ────────────────────────────────────────────
+            if mb_magic == userspace_loader::MB2_OK {
+                debug::log_ok("MB2 magic", true);
+                if let Some((s, e)) = userspace_loader::mb2_module(mb_info) {
+                    debug::log_ok("Modul MB2", true);
                     print("  Adres: ");
                     { let mut b = [0u8;18]; print(hex_str(s, &mut b)); }
                     print(" - ");
                     { let mut b = [0u8;18]; print(hex_str(e, &mut b)); }
                     print("\n");
                     let ok = userspace_loader::load_userspace(s, e);
-                    debug::log_ok("Uruchomienie userspace", ok);
+                    debug::log_ok("Zaladowanie MB2", ok);
+                    if ok { break 'load true; }
+                    printc("  MB2 load failed — probuje embedded\n", col::YELLOW);
+                } else {
+                    debug::log_ok("Modul MB2", false);
+                    printc("  Brak modulu. Dodaj do grub.cfg:\n", col::YELLOW);
+                    printc("    module2 /boot/userspace.bin\n", col::YELLOW);
+                    printc("  Probuje embedded...\n", col::YELLOW);
                 }
-                None => {
-                    debug::log_ok("Modul userspace", false);
-                    printc("  Dodaj do grub.cfg: module2 /boot/userspace.bin\n", col::YELLOW);
-                }
+            } else {
+                debug::log_ok("MB2 magic", false);
+                print("  Magic=");
+                { let mut b=[0u8;18]; print(hex_str(mb_magic, &mut b)); }
+                print(" (brak GRUB) — probuje embedded\n");
             }
-        } else {
-            debug::log_ok("MB2 magic", false);
-            print("  Otrzymano: ");
-            { let mut b = [0u8;18]; print(hex_str(mb_magic, &mut b)); }
-            print("\n");
+
+            // ── 2. Embedded blob ──────────────────────────────────────────────
+            let ok = userspace_loader::load_embedded();
+            debug::log_ok("Zaladowanie embedded", ok);
+            break 'load ok;
+        };
+
+        if !loaded {
+            printc("  UWAGA: userspace nie zaladowany!\n", col::LRED);
+            printc("  Kernel dziala tylko w trybie kterminal.\n", col::YELLOW);
+            printc("  Aby uruchomic userspace:\n", col::YELLOW);
+            printc("    QEMU:  -initrd build/userspace.bin\n", col::LGREY);
+            printc("    GRUB:  module2 /boot/userspace.bin\n", col::LGREY);
         }
 
         // ── 10. Info systemowe ───────────────────────────────────────────────
