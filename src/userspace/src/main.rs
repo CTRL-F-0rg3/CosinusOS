@@ -21,8 +21,8 @@ mod asm_utils;
 mod collections;
 mod graphics;
 mod drivers;
-mod files;        // istniejący
-// mod Terminal;  // istniejący — odkomentuj jeśli używasz
+mod files;
+mod terminal;     // Terminal userspace
 
 // ── Re-eksporty dla wygody w main ─────────────────────────────────────────────
 use syscall::{print, println, exit};
@@ -56,11 +56,13 @@ fn panic(info: &PanicInfo) -> ! {
 }
 
 // ── Entry point ───────────────────────────────────────────────────────────────
+// Kernel wywołuje: extern "C" fn entry(arg: u64) -> !
+// arg = 0 na razie (przyszłość: wskaźnik do bloku startowego)
 #[no_mangle]
-pub extern "C" fn _start() -> ! { main(); exit(0); }
+pub unsafe extern "C" fn _start(arg: u64) -> ! { main(arg); exit(0); }
 
 // ── Main ─────────────────────────────────────────────────────────────────────
-fn main() {
+fn main(_arg: u64) {
     println("==================================");
     println("  CosinusOS Userspace v2");
     println("==================================");
@@ -88,7 +90,7 @@ fn main() {
     map.insert("alpha", 1);
     map.insert("beta",  2);
     map.insert("gamma", 3);
-    map.insert("beta", 99); // update
+    map.insert("beta", 99);
     if let Some(v) = map.get(&"beta")  { println_fmt!("beta  = {}", v); }
     if let Some(v) = map.get(&"gamma") { println_fmt!("gamma = {}", v); }
     println_fmt!("map.len = {}", map.len());
@@ -125,17 +127,14 @@ fn main() {
             .with_callback(|| println("Button clicked!"))
     ));
     win.draw(&mut fb);
-    win.handle_click(125, 210); // symulacja kliknięcia
-
-    // ── Terminal ─────────────────────────────────────────────────────────────
-    // (Terminal.rs — istniejący moduł, przykład użycia poniżej)
-    // let mut term = Terminal::new(80, 25);
-    // term.write_str("Welcome to CosinusOS v2!\n");
+    win.handle_click(125, 210);
 
     println("");
     println("==================================");
-    println("  All systems operational!");
+    println("  Launching terminal...");
     println("==================================");
+    println("");
 
-    loop { unsafe { core::arch::asm!("hlt"); } }
+    // ── Terminal — główna pętla userspace ─────────────────────────────────────
+    terminal::terminal_main();
 }

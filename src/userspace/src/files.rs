@@ -5,7 +5,8 @@ extern crate alloc;
 use alloc::vec::Vec;
 use alloc::string::String;
 use alloc::boxed::Box;
-use crate::{HashMap, SpinLock};
+use crate::collections::HashMap;
+use crate::sync::SpinLock;
 
 // ============================================================================
 // TYPY BAZOWE

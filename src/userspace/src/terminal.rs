@@ -23,6 +23,7 @@
 extern crate alloc;
 
 use alloc::vec::Vec;
+use alloc::vec;
 use alloc::string::String;
 use alloc::string::ToString;
 use alloc::format;
@@ -35,7 +36,23 @@ use crate::files::{
     dir_list, dir_create, file_remove, VFS,
     RamFs,
 };
-use crate::{print, println, print_fmt, println_fmt, SpinLock};
+use crate::syscall::{print, println};
+use crate::sync::SpinLock;
+
+// Lokalne makra formatowania
+macro_rules! print_fmt {
+    ($($arg:tt)*) => {{
+        use core::fmt::Write;
+        let mut w = crate::syscall::Writer;
+        let _ = core::fmt::write(&mut w, format_args!($($arg)*));
+    }};
+}
+macro_rules! println_fmt {
+    ()            => { crate::syscall::print("\n"); };
+    ($($arg:tt)*) => {{ print_fmt!($($arg)*); crate::syscall::print("\n"); }};
+}
+use print_fmt;
+use println_fmt;
 
 // ============================================================================
 // KOLORY ANSI (przez print do VGA / serial)
@@ -1049,12 +1066,42 @@ pub fn run_demo() {
 }
 
 // ============================================================================
-// PUBLICZNY ENTRY POINT (zgodny z sygnaturą w main.rs)
+// PUBLICZNY ENTRY POINT
 // ============================================================================
 
 /// Zainicjuj i uruchom terminal CosinusOS.
 /// Wywołaj z main() — blokuje aż do wpisania 'exit'.
 pub fn terminal_main() {
     crate::files::file_system();
-    run_demo(); // zamień na run_terminal(keyboard_input) gdy będzie sterownik klawiatury
-} // eh
+
+    // Sprawdź czy stdin jest aktywny (QEMU może nie mieć kbd jeszcze)
+    // Próbuj przez ~100 yield'ów (~1s przy 100Hz schedulerze)
+    let mut probe = [0u8; 1];
+    let mut stdin_ready = false;
+    for _ in 0..100 {
+        if crate::syscall::read_stdin(&mut probe) >= 0 {
+            stdin_ready = true;
+            break;
+        }
+        crate::syscall::sched_yield();
+    }
+
+    if !stdin_ready {
+        // Brak stdin — uruchom skrypt demo zamiast czekać wiecznie
+        run_demo();
+        return;
+    }
+
+    // Stdin aktywny — tryb interaktywny
+    let mut line_buf = [0u8; 512];
+    run_terminal(|| {
+        let n = crate::syscall::read_line(&mut line_buf);
+        if n == 0 { return None; }
+        // Usuń \r\n z końca
+        let mut end = n;
+        while end > 0 && (line_buf[end-1] == b'\n' || line_buf[end-1] == b'\r') {
+            end -= 1;
+        }
+        Some(String::from(core::str::from_utf8(&line_buf[..end]).unwrap_or("")))
+    });
+}
