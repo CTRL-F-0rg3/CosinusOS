@@ -61,6 +61,12 @@ fn panic(info: &PanicInfo) -> ! {
 #[no_mangle]
 pub extern "C" fn kernel_main(mb_magic: u64, mb_info: u64) -> ! {
     unsafe {
+        // ── Wyłącz przerwania na CAŁY czas boot — sti dopiero przed schedule()
+        // Bez tego IRQ0 (timer) może odpali schedule() zanim kernel skończy
+        // inicjalizację, co powoduje crash przy thread_switch z niezainicjowanym
+        // stosem lub niezaładowanym userspace.
+        asm!("cli", options(nomem, nostack));
+
         // ── 1. Podstawowe I/O ────────────────────────────────────────────────
         cls();
         debug::serial_init();
@@ -80,14 +86,23 @@ pub extern "C" fn kernel_main(mb_magic: u64, mb_info: u64) -> ! {
         // ── 3. CPU ───────────────────────────────────────────────────────────
         perm::init_gdt(); debug::log_ok("GDT", true);
         perm::init_pic(); debug::log_ok("PIC", true);
-        perm::init_idt(); debug::log_ok("IDT + IRQ1 + IRQ12", true);
+
+        // init_idt wewnętrznie robi sti — nadpisujemy to od razu cli
+        perm::init_idt();
+        asm!("cli", options(nomem, nostack)); // ← trzymaj cli mimo sti w init_idt
+        debug::log_ok("IDT + IRQ1 + IRQ12", true);
 
         // ── 4. Scheduler ─────────────────────────────────────────────────────
         threading::sched_init(); debug::log_ok("Scheduler (idle thread)", true);
-        perm::init_pit();        debug::log_ok("PIT 100Hz", true);
 
-        // ── 5. PS/2 — po sched_init żeby TSS.rsp0 był ustawiony ──────────────
+        // init_pit wewnętrznie robi sti — nadpisujemy
+        perm::init_pit();
+        asm!("cli", options(nomem, nostack)); // ← trzymaj cli mimo sti w init_pit
+        debug::log_ok("PIT 100Hz (wstrzymany do boot complete)", true);
+
+        // ── 5. PS/2 ──────────────────────────────────────────────────────────
         input::init_ps2();
+        asm!("cli", options(nomem, nostack)); // init_ps2 może zmieniać IF
         debug::log_ok("PS/2 keyboard + mouse", true);
 
         // ── 6. Display ───────────────────────────────────────────────────────
@@ -109,14 +124,7 @@ pub extern "C" fn kernel_main(mb_magic: u64, mb_info: u64) -> ! {
         print("\n");
         printc("=== Userspace ===\n", col::YELLOW);
 
-        // ── Próba załadowania userspace ───────────────────────────────────────
-        // Kolejność priorytetu:
-        //   1. Moduł Multiboot2 (GRUB module2 /boot/userspace.bin)
-        //   2. Embedded blob w obrazie kernela (_userspace_blob_start/end)
-        //   3. Brak — kernel działa tylko z kterminalem
-
-        let loaded: bool = 'load: {
-            // ── 1. Multiboot2 moduł ────────────────────────────────────────────
+        let loaded = 'load: {
             if mb_magic == userspace_loader::MB2_OK {
                 debug::log_ok("MB2 magic", true);
                 if let Some((s, e)) = userspace_loader::mb2_module(mb_info) {
@@ -132,18 +140,14 @@ pub extern "C" fn kernel_main(mb_magic: u64, mb_info: u64) -> ! {
                     printc("  MB2 load failed — probuje embedded\n", col::YELLOW);
                 } else {
                     debug::log_ok("Modul MB2", false);
-                    printc("  Brak modulu. Dodaj do grub.cfg:\n", col::YELLOW);
-                    printc("    module2 /boot/userspace.bin\n", col::YELLOW);
-                    printc("  Probuje embedded...\n", col::YELLOW);
+                    printc("  Brak modulu — probuje embedded\n", col::YELLOW);
                 }
             } else {
                 debug::log_ok("MB2 magic", false);
                 print("  Magic=");
                 { let mut b=[0u8;18]; print(hex_str(mb_magic, &mut b)); }
-                print(" (brak GRUB) — probuje embedded\n");
+                print(" — probuje embedded\n");
             }
-
-            // ── 2. Embedded blob ──────────────────────────────────────────────
             let ok = userspace_loader::load_embedded();
             debug::log_ok("Zaladowanie embedded", ok);
             break 'load ok;
@@ -151,10 +155,7 @@ pub extern "C" fn kernel_main(mb_magic: u64, mb_info: u64) -> ! {
 
         if !loaded {
             printc("  UWAGA: userspace nie zaladowany!\n", col::LRED);
-            printc("  Kernel dziala tylko w trybie kterminal.\n", col::YELLOW);
-            printc("  Aby uruchomic userspace:\n", col::YELLOW);
-            printc("    QEMU:  -initrd build/userspace.bin\n", col::LGREY);
-            printc("    GRUB:  module2 /boot/userspace.bin\n", col::LGREY);
+            printc("  Kernel dziala tylko z kterminalem.\n", col::YELLOW);
         }
 
         // ── 10. Info systemowe ───────────────────────────────────────────────
@@ -174,8 +175,12 @@ pub extern "C" fn kernel_main(mb_magic: u64, mb_info: u64) -> ! {
         print("########################################################\n");
         set_col(col::WHITE);
         print("\n\n");
-        serial_print("[OK] boot complete\n");
+        serial_print("[OK] boot complete — enabling interrupts\n");
 
+        // ── Dopiero teraz włącz przerwania i oddaj kontrolę schedulerowi ─────
+        // Wszystkie wątki (kterminal, userspace) są w stanie Ready.
+        // schedule() wybierze pierwszy gotowy i przeskoczy do niego.
+        asm!("sti", options(nomem, nostack));
         threading::schedule();
         loop { asm!("hlt", options(nomem, nostack)); }
     }

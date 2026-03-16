@@ -133,7 +133,7 @@ pub unsafe fn init_idt() {
     IDTR.lim  = (core::mem::size_of::<[IdtE; IDT_LEN]>() - 1) as u16;
     IDTR.base = IDT.as_ptr() as u64;
     asm!("lidt [{}]", in(reg) &raw const IDTR, options(preserves_flags));
-    asm!("sti", options(nomem, nostack));
+    // Bez sti — kernel_main włącza przerwania dopiero po pełnym boot
 }
 
 // ── PIC ──────────────────────────────────────────────────────────────────────
@@ -154,7 +154,7 @@ pub unsafe fn init_pit() {
     outb(0x43, 0x36);
     outb(0x40, (d & 0xFF) as u8);
     outb(0x40, (d >> 8) as u8);
-    asm!("sti", options(nomem, nostack));
+    // Bez sti — kernel_main włącza przerwania dopiero po pełnym boot
 }
 
 // ── ISR helpers ───────────────────────────────────────────────────────────────
