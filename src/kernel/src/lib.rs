@@ -9,6 +9,7 @@ use core::{arch::asm, panic::PanicInfo, sync::atomic::Ordering};
 pub mod sync;
 pub mod debug;
 pub mod mm;
+pub mod valloc;
 pub mod perm;
 pub mod input;
 pub mod threading;

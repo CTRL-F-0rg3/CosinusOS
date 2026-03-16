@@ -3,6 +3,7 @@ use core::arch::asm;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use crate::sync::Spinlock;
 use crate::mm::{VirtAddr, PhysAddr, PTE_W, PTE_U, K_P4, PAGE_SIZE, KERNEL_STACK_SIZE, USER_STACK_SIZE, vmap, mm_alloc};
+use crate::valloc::VAddrSpace;
 use crate::debug::{serial_print, serial_hex, print, num_str};
 use crate::perm::tss_rsp0;
 
@@ -57,16 +58,21 @@ pub enum TS { Run, Ready, Block, Dead }
 #[derive(Copy, Clone)]
 #[repr(C)]
 pub struct Thread {
-    pub wake_tick: u64,
-    pub id:    u32,
-    pub state: TS,
-    pub prio:  u8,
-    pub krsp:  VirtAddr,
-    pub ktop:  VirtAddr,
-    pub utop:  VirtAddr,
-    pub cr3:   PhysAddr,
-    pub name:  [u8; 16],
-    pub ticks: u64,
+    pub wake_tick:    u64,
+    pub id:           u32,
+    pub state:        TS,
+    pub prio:         u8,
+    pub krsp:         VirtAddr,
+    pub ktop:         VirtAddr,
+    pub utop:         VirtAddr,
+    pub cr3:          PhysAddr,
+    pub name:         [u8; 16],
+    pub ticks:        u64,
+    // ── Nowe pola ─────────────────────────────────────────────────────────────
+    pub valloc:       VAddrSpace,      // wirtualny allocator przestrzeni adresowej
+    pub sig_handlers: [u64; 32],       // handlery sygnałów (0 = domyślny = zakończ)
+    pub sig_pending:  u64,             // bitmaska oczekujących sygnałów
+    pub cwd:          [u8; 256],       // bieżący katalog roboczy (null-terminated)
 }
 
 impl Thread {
@@ -76,6 +82,14 @@ impl Thread {
             krsp: 0, ktop: 0, utop: 0, cr3: 0,
             name: [0; 16], ticks: 0,
             wake_tick: 0,
+            valloc:       VAddrSpace::new(),
+            sig_handlers: [0u64; 32],
+            sig_pending:  0,
+            cwd:          {
+                let mut a = [0u8; 256];
+                a[0] = b'/';
+                a
+            },
         }
     }
     pub fn name_str(&self) -> &str {
