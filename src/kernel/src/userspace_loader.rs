@@ -90,53 +90,121 @@ unsafe fn load_elf64(elf: *const u8, _sz: usize) -> bool {
     for i in 0..e_phnum {
         let ph      = elf.add(e_phoff as usize + i * e_phentsize);
         let p_type  = *(ph as *const u32);
-        if p_type != 1 { continue; } // PT_LOAD only
+        let p_flags = *(ph.add(0x04) as *const u32);
 
-        let p_flags  = *(ph.add(0x04) as *const u32);
+        // Loguj każdy segment na serial dla debugowania
+        crate::debug::serial_print("[ELF] ph[");
+        { let mut b=[0u8;24]; crate::debug::serial_print(num_str(i, &mut b)); }
+        crate::debug::serial_print("] type=");
+        { let mut b=[0u8;18]; crate::debug::serial_print(hex_str(p_type as u64, &mut b)); }
+        crate::debug::serial_print(" flags=");
+        { let mut b=[0u8;18]; crate::debug::serial_print(hex_str(p_flags as u64, &mut b)); }
+        crate::debug::serial_print("\n");
+
+        if p_type != 1 { continue; } // PT_LOAD = 1
+
         let p_offset = *(ph.add(0x08) as *const u64);
         let p_vaddr  = *(ph.add(0x10) as *const u64);
         let p_filesz = *(ph.add(0x20) as *const u64);
         let p_memsz  = *(ph.add(0x28) as *const u64);
+
+        // Loguj PT_LOAD szczegółowo
+        crate::debug::serial_print("[ELF] PT_LOAD vaddr=");
+        { let mut b=[0u8;18]; crate::debug::serial_print(hex_str(p_vaddr, &mut b)); }
+        crate::debug::serial_print(" filesz=");
+        { let mut b=[0u8;24]; crate::debug::serial_print(num_str(p_filesz as usize, &mut b)); }
+        crate::debug::serial_print(" memsz=");
+        { let mut b=[0u8;24]; crate::debug::serial_print(num_str(p_memsz as usize, &mut b)); }
+        crate::debug::serial_print("\n");
+
         if p_memsz == 0 { continue; }
 
-        let p_memsz = core::cmp::min(p_memsz, 2 * 1024 * 1024); // max 2MB na segment
+        // Ogranicz rozmiar segmentu — max 8MB na segment
+        let p_memsz_clamped = core::cmp::min(p_memsz, 8 * 1024 * 1024);
 
+        // Upewnij się że vaddr jest w bezpiecznym zakresie userspace
+        // (powyżej 0x1000, poniżej 0x8000_0000)
+        let effective_vaddr = load_base + p_vaddr;
+        if effective_vaddr < 0x1000 {
+            crate::debug::serial_print("[ELF] SKIP: vaddr too low\n");
+            continue;
+        }
+        if effective_vaddr >= 0x8000_0000 {
+            crate::debug::serial_print("[ELF] SKIP: vaddr too high\n");
+            continue;
+        }
+
+        // Uprawnienia: zawsze PTE_U, W tylko gdy p_flags ma bit W (0x2)
         let mut perm = PTE_U;
         if p_flags & 0x2 != 0 { perm |= PTE_W; }
 
-        let seg_start = (load_base + p_vaddr) & !(PAGE_SIZE as u64 - 1);
-        let seg_end   = (load_base + p_vaddr + p_memsz + PAGE_SIZE as u64 - 1)
+        let seg_start = effective_vaddr & !(PAGE_SIZE as u64 - 1);
+        let seg_end   = (effective_vaddr + p_memsz_clamped + PAGE_SIZE as u64 - 1)
                         & !(PAGE_SIZE as u64 - 1);
+        let pages     = ((seg_end - seg_start) / PAGE_SIZE as u64) as usize;
+
+        crate::debug::serial_print("[ELF] mapping ");
+        { let mut b=[0u8;24]; crate::debug::serial_print(num_str(pages, &mut b)); }
+        crate::debug::serial_print(" pages at ");
+        { let mut b=[0u8;18]; crate::debug::serial_print(hex_str(seg_start, &mut b)); }
+        crate::debug::serial_print("\n");
 
         let mut vaddr = seg_start;
         while vaddr < seg_end {
             let phys = mm_alloc();
-            vmap(cr3, vaddr, phys, perm);
-            let dst = phys as *mut u8;
-            core::ptr::write_bytes(dst, 0, PAGE_SIZE);
-
-            let vaddr_rel = vaddr - load_base;
-            let page_off  = if vaddr_rel >= p_vaddr { vaddr_rel - p_vaddr } else { 0 };
-            if page_off < p_filesz {
-                let file_off = p_offset + page_off;
-                let copy_n   = core::cmp::min(PAGE_SIZE as u64, p_filesz - page_off) as usize;
-                let src_ptr  = elf.add(file_off as usize);
-                let dst_off  = if vaddr < load_base + p_vaddr {
-                    (load_base + p_vaddr - vaddr) as usize
-                } else { 0 };
-                core::ptr::copy_nonoverlapping(src_ptr, dst.add(dst_off), copy_n);
+            if phys == 0 {
+                crate::debug::serial_print("[ELF] OOM at vaddr=");
+                { let mut b=[0u8;18]; crate::debug::serial_print(hex_str(vaddr, &mut b)); }
+                crate::debug::serial_print("\n");
+                return false;
             }
+
+            // Wyczyść stronę
+            core::ptr::write_bytes(phys as *mut u8, 0, PAGE_SIZE);
+            vmap(cr3, vaddr, phys, perm);
+
+            // Kopiuj dane pliku na tę stronę
+            // Zakres pliku: [p_offset .. p_offset + p_filesz]
+            // Zakres wirt:  [effective_vaddr .. effective_vaddr + p_filesz]
+            // Dla strony vaddr:
+            //   strona pokrywa [vaddr, vaddr + PAGE_SIZE)
+            //   dane pliku:    [effective_vaddr + page_off_in_seg, ...)
+            if p_filesz > 0 {
+                // Offset danych segmentu w ramach tej strony
+                let page_vaddr_end = vaddr + PAGE_SIZE as u64;
+                let seg_data_start = effective_vaddr;
+                let seg_data_end   = effective_vaddr + p_filesz;
+
+                // Czy ta strona nakłada się z danymi pliku?
+                if vaddr < seg_data_end && page_vaddr_end > seg_data_start {
+                    // Zakres kopiowania w tej stronie
+                    let copy_vstart = core::cmp::max(vaddr, seg_data_start);
+                    let copy_vend   = core::cmp::min(page_vaddr_end, seg_data_end);
+                    let copy_len    = (copy_vend - copy_vstart) as usize;
+
+                    // Offset w pliku
+                    let file_offset = p_offset + (copy_vstart - seg_data_start);
+                    // Offset w stronie fizycznej
+                    let dst_offset  = (copy_vstart - vaddr) as usize;
+
+                    let src = elf.add(file_offset as usize);
+                    let dst = (phys as *mut u8).add(dst_offset);
+                    core::ptr::copy_nonoverlapping(src, dst, copy_len);
+                }
+            }
+
             vaddr += PAGE_SIZE as u64;
         }
 
-        let mut buf = [0u8; 24];
+        // Log na VGA
         print("  [SEG] vaddr=");
-        { let mut b = [0u8; 18]; print(hex_str(p_vaddr, &mut b)); }
-        print(" filesz="); print(num_str(p_filesz as usize, &mut buf));
-        print(" memsz=");  print(num_str(p_memsz  as usize, &mut buf));
+        { let mut b = [0u8; 18]; print(hex_str(effective_vaddr, &mut b)); }
+        print(" filesz="); { let mut b=[0u8;24]; print(num_str(p_filesz as usize, &mut b)); }
+        print(" memsz=");  { let mut b=[0u8;24]; print(num_str(p_memsz_clamped as usize, &mut b)); }
         print("\n");
     }
 
+    crate::debug::serial_print("[ELF] all segments loaded, spawning\n");
     US_ENTRY = e_entry;
     spawn_and_report("userspace", e_entry, 0, cr3)
 }
@@ -154,65 +222,26 @@ unsafe fn spawn_and_report(name: &str, entry: u64, arg: u64, cr3: PhysAddr) -> b
         false
     }
 }
-// ── Embedded userspace (wbudowany w obraz kernela) ────────────────────────────
-//
-// Jak wbudować binarke:
-//
-//   1. Zbuduj userspace:
-//        cargo build --target x86_64-unknown-none --release -p userspace
-//        cp target/x86_64-unknown-none/release/userspace build/userspace.bin
-//
-//   2. Wbuduj jako sekcja .userspace w kernelu (w cosinus.ld / build.zig):
-//
-//      W linker script cosinus.ld dodaj:
-//        .userspace : ALIGN(4096) {
-//            _userspace_blob_start = .;
-//            KEEP(*(.userspace_blob))
-//            _userspace_blob_end = .;
-//        }
-//
-//      W build.zig / Makefile wygeneruj obiekt z binarki:
-//        objcopy -I binary -O elf64-x86-64 \
-//            --rename-section .data=.userspace_blob \
-//            build/userspace.bin build/userspace_blob.o
-//      I dołącz userspace_blob.o do linkowania kernela.
-//
-//   3. Gdy symbole nie istnieją (dev bez wbudowanej binarki),
-//      load_embedded() zwraca false — kernel działa tylko z kterminalem.
-//
-// Alternatywa — QEMU -initrd:
-//   Użyj GRUB lub własnego bootloadera który przekazuje initrd jako MB2 moduł.
-//   Wtedy mb2_module() znajdzie binarke i load_embedded() nie jest potrzebny.
-//   Przykład QEMU z GRUB ISO:
-//     qemu-system-x86_64 -cdrom cosinus.iso -serial stdio
-//   Przykład bez GRUB (tylko -kernel, brak MB2 modułu):
-//     qemu-system-x86_64 -kernel build/kernel.bin -initrd build/userspace.bin
-//   W tym przypadku MB2 magic może być niepoprawne — trzeba wbudować blob.
-
+// ── Embedded userspace blob ───────────────────────────────────────────────────
 unsafe extern "C" {
-    // Symbole z linker script — 0 gdy nie zdefiniowane
     static _userspace_blob_start: u8;
     static _userspace_blob_end:   u8;
 }
 
-/// Załaduj userspace wbudowany w obraz kernela.
-/// Zwraca true jeśli blob istnieje i uruchomienie się powiodło.
 pub unsafe fn load_embedded() -> bool {
     let start = core::ptr::addr_of!(_userspace_blob_start) as u64;
     let end   = core::ptr::addr_of!(_userspace_blob_end)   as u64;
 
     if start == 0 || end <= start || (end - start) < 4 {
-        // Brak wbudowanego userspace — normalna sytuacja podczas dev
-        crate::debug::print("  Brak embedded blob (symbole = 0)\n");
+        crate::debug::serial_print("[EMB] brak embedded blob\n");
         return false;
     }
 
-    let sz = end - start;
-    crate::debug::print("  Embedded blob @ ");
-    { let mut b = [0u8;18]; crate::debug::print(crate::debug::hex_str(start, &mut b)); }
-    crate::debug::print(" size=");
-    { let mut b = [0u8;24]; crate::debug::print(crate::debug::num_str(sz as usize, &mut b)); }
-    crate::debug::print(" B\n");
+    crate::debug::serial_print("[EMB] blob @ ");
+    { let mut b=[0u8;18]; crate::debug::serial_print(hex_str(start, &mut b)); }
+    crate::debug::serial_print(" size=");
+    { let mut b=[0u8;24]; crate::debug::serial_print(num_str((end-start) as usize, &mut b)); }
+    crate::debug::serial_print("\n");
 
     load_userspace(start, end)
 }
