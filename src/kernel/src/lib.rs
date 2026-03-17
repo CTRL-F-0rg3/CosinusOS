@@ -61,127 +61,69 @@ fn panic(info: &PanicInfo) -> ! {
 #[no_mangle]
 pub extern "C" fn kernel_main(mb_magic: u64, mb_info: u64) -> ! {
     unsafe {
-        // ── Wyłącz przerwania na CAŁY czas boot — sti dopiero przed schedule()
-        // Bez tego IRQ0 (timer) może odpali schedule() zanim kernel skończy
-        // inicjalizację, co powoduje crash przy thread_switch z niezainicjowanym
-        // stosem lub niezaładowanym userspace.
         asm!("cli", options(nomem, nostack));
-
-        // ── 1. Podstawowe I/O ────────────────────────────────────────────────
-        cls();
-        debug::serial_init();
-
+        cls(); debug::serial_init();
         set_col(col::attr(col::LCYAN, col::BLACK));
-        print(" ===========================\n");
-        print("  CosinusOS Microkernel v3.5\n");
-        print(" ===========================\n\n");
+        print(" ===========================\n  CosinusOS Microkernel v3.5\n ===========================\n\n");
         set_col(col::WHITE);
         serial_print("=== CosinusOS v3.5 boot ===\n");
 
-        // ── 2. Pamięć ────────────────────────────────────────────────────────
         mm::mm_init(0x0100_0000, 0x0F00_0000);
         mm::vmm_init(0x1000);
         debug::log_ok("PMM + VMM", true);
 
-        // ── 3. CPU ───────────────────────────────────────────────────────────
         perm::init_gdt(); debug::log_ok("GDT", true);
         perm::init_pic(); debug::log_ok("PIC", true);
-
-        // init_idt wewnętrznie robi sti — nadpisujemy to od razu cli
-        perm::init_idt();
-        asm!("cli", options(nomem, nostack)); // ← trzymaj cli mimo sti w init_idt
+        perm::init_idt(); asm!("cli", options(nomem, nostack));
         debug::log_ok("IDT + IRQ1 + IRQ12", true);
 
-        // ── 4. Scheduler ─────────────────────────────────────────────────────
         threading::sched_init(); debug::log_ok("Scheduler (idle thread)", true);
+        perm::init_pit(); asm!("cli", options(nomem, nostack));
+        debug::log_ok("PIT 100Hz", true);
 
-        // init_pit wewnętrznie robi sti — nadpisujemy
-        perm::init_pit();
-        asm!("cli", options(nomem, nostack)); // ← trzymaj cli mimo sti w init_pit
-        debug::log_ok("PIT 100Hz (wstrzymany do boot complete)", true);
-
-        // ── 5. PS/2 ──────────────────────────────────────────────────────────
-        input::init_ps2();
-        asm!("cli", options(nomem, nostack)); // init_ps2 może zmieniać IF
+        input::init_ps2(); asm!("cli", options(nomem, nostack));
         debug::log_ok("PS/2 keyboard + mouse", true);
 
-        // ── 6. Display ───────────────────────────────────────────────────────
         let disp_ok = display::display_init();
         debug::log_ok("Display HDMI/DP", disp_ok);
 
-        // ── 7. USB ───────────────────────────────────────────────────────────
         let usb_ok = usb::usb_init();
         debug::log_ok("USB XHCI/EHCI/OHCI + HID", usb_ok);
-        if usb_ok {
-            spawn_k("usb\0", usb::usb_thread as *const () as u64, 0);
-        }
+        if usb_ok { spawn_k("usb\0", usb::usb_thread as *const () as u64, 0); }
 
-        // ── 8. Kernel terminal ───────────────────────────────────────────────
         spawn_k("kterminal\0", kterminal::run as *const () as u64, 0);
         debug::log_ok("Kernel terminal (PS/2 + COM1)", true);
 
-        // ── 9. Userspace ─────────────────────────────────────────────────────
-        print("\n");
-        printc("=== Userspace ===\n", col::YELLOW);
-
+        print("\n"); printc("=== Userspace ===\n", col::YELLOW);
         let loaded = 'load: {
             if mb_magic == userspace_loader::MB2_OK {
                 debug::log_ok("MB2 magic", true);
                 if let Some((s, e)) = userspace_loader::mb2_module(mb_info) {
                     debug::log_ok("Modul MB2", true);
-                    print("  Adres: ");
-                    { let mut b = [0u8;18]; print(hex_str(s, &mut b)); }
-                    print(" - ");
-                    { let mut b = [0u8;18]; print(hex_str(e, &mut b)); }
-                    print("\n");
+                    { let mut b=[0u8;18]; print(hex_str(s,&mut b)); } print(" - ");
+                    { let mut b=[0u8;18]; print(hex_str(e,&mut b)); } print("\n");
                     let ok = userspace_loader::load_userspace(s, e);
-                    debug::log_ok("Zaladowanie MB2", ok);
+                    debug::log_ok("Zaladowanie", ok);
                     if ok { break 'load true; }
-                    printc("  MB2 load failed — probuje embedded\n", col::YELLOW);
-                } else {
-                    debug::log_ok("Modul MB2", false);
-                    printc("  Brak modulu — probuje embedded\n", col::YELLOW);
                 }
-            } else {
-                debug::log_ok("MB2 magic", false);
-                print("  Magic=");
-                { let mut b=[0u8;18]; print(hex_str(mb_magic, &mut b)); }
-                print(" — probuje embedded\n");
-            }
+                debug::log_ok("Modul MB2", false);
+            } else { debug::log_ok("MB2 magic", false); }
             let ok = userspace_loader::load_embedded();
-            debug::log_ok("Zaladowanie embedded", ok);
+            debug::log_ok("Embedded", ok);
             break 'load ok;
         };
+        if !loaded { printc("  UWAGA: brak userspace\n", col::LRED); }
 
-        if !loaded {
-            printc("  UWAGA: userspace nie zaladowany!\n", col::LRED);
-            printc("  Kernel dziala tylko z kterminalem.\n", col::YELLOW);
-        }
+        print("\n"); printc("=== system ===\n", col::YELLOW);
+        { let mut b=[0u8;24]; print(num_str(mm_free_kb(),&mut b)); } print(" KB free\n");
+        { let mut b=[0u8;24]; print(num_str(NTHREADS.load(Ordering::Relaxed),&mut b)); } print(" threads\n");
+        set_col(col::attr(col::BLACK, col::LGREEN)); print(" [ COMPLETE ] \n");
+        set_col(col::WHITE); print("\n");
+        serial_print("[OK] boot complete\n");
 
-        // ── 10. Info systemowe ───────────────────────────────────────────────
-        print("\n");
-        printc("=== system ===\n", col::YELLOW);
-        print("  memory: ");
-        { let mut b = [0u8;24]; print(num_str(mm_free_kb(), &mut b)); }
-        print(" KB\n");
-        print("  Watki: ");
-        { let mut b = [0u8;24]; print(num_str(NTHREADS.load(Ordering::Relaxed), &mut b)); }
-        print("\n");
-
-        print("\n");
-        set_col(col::attr(col::BLACK, col::LGREEN));
-        print(" [ COMPLETE ] \n");
-        set_col(col::attr(col::YELLOW, col::BLACK));
-        print("########################################################\n");
-        set_col(col::WHITE);
-        print("\n\n");
-        serial_print("[OK] boot complete — enabling interrupts\n");
-
-        // ── Dopiero teraz włącz przerwania i oddaj kontrolę schedulerowi ─────
-        // Wszystkie wątki (kterminal, userspace) są w stanie Ready.
-        // schedule() wybierze pierwszy gotowy i przeskoczy do niego.
-        asm!("sti", options(nomem, nostack));
-        threading::schedule();
-        loop { asm!("hlt", options(nomem, nostack)); }
+        // KRYTYCZNE: jump_to_scheduler NIE schedule()
+        // schedule() nadpisałoby THREADS[0].krsp stosem kernel_main
+        // powodując crash gdy scheduler wróci do idle
+        threading::jump_to_scheduler();
     }
 }

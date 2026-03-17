@@ -83,11 +83,7 @@ impl Thread {
             valloc:       VAddrSpace::new(),
             sig_handlers: [0u64; 32],
             sig_pending:  0,
-            cwd:          {
-                let mut a = [0u8; 256];
-                a[0] = b'/';
-                a
-            },
+            cwd:          { let mut a = [0u8; 256]; a[0] = b'/'; a },
         }
     }
     pub fn name_str(&self) -> &str {
@@ -135,10 +131,8 @@ pub unsafe fn spawn_k(name: &str, entry: u64, arg: u64) -> i32 {
         t.state = TS::Ready;
         let mut buf = [0u8; 24];
         print("  [T#"); print(num_str(i, &mut buf)); print("] "); print(name); print("\n");
-        asm!("sti", options(nomem, nostack));
         return i as i32;
     }
-    asm!("sti", options(nomem, nostack));
     -1
 }
 
@@ -168,12 +162,19 @@ pub unsafe fn spawn_user_on_cr3(name: &str, entry: u64, arg: u64, cr3: PhysAddr)
         t.ktop = kt; t.utop = ut; t.cr3 = cr3; t.ticks = 0;
         init_thread_stack(t, kt, ut, entry, arg, true);
 
-        serial_print("[SPAWN] user thread #");
-        { let mut buf=[0u8;24]; serial_print(num_str(i, &mut buf)); }
+        serial_print("[SPAWN] #");
+        { let mut b=[0u8;24]; serial_print(num_str(i,&mut b)); }
         serial_print(" entry="); serial_hex(entry);
-        serial_print(" ut=");    serial_hex(ut);
         serial_print(" krsp=");  serial_hex(t.krsp);
-        serial_print(" cr3=");   serial_hex(cr3);
+        serial_print("\n");
+        // Dump iretq frame dla debugowania
+        let ksp = t.krsp;
+        serial_print("[FRAME] tramp="); serial_hex(*((ksp+48) as *const u64));
+        serial_print(" RIP=");  serial_hex(*((ksp+56) as *const u64));
+        serial_print(" CS=");   serial_hex(*((ksp+64) as *const u64));
+        serial_print(" FL=");   serial_hex(*((ksp+72) as *const u64));
+        serial_print(" RSP=");  serial_hex(*((ksp+80) as *const u64));
+        serial_print(" SS=");   serial_hex(*((ksp+88) as *const u64));
         serial_print("\n");
 
         set_name(t, name);
@@ -181,10 +182,8 @@ pub unsafe fn spawn_user_on_cr3(name: &str, entry: u64, arg: u64, cr3: PhysAddr)
         NTHREADS.fetch_add(1, Ordering::Relaxed);
         let mut buf = [0u8; 24];
         print("  [T#"); print(num_str(i, &mut buf)); print("] "); print(name); print("\n");
-        asm!("sti", options(nomem, nostack));
         return i as i32;
     }
-    asm!("sti", options(nomem, nostack));
     -1
 }
 
@@ -276,6 +275,59 @@ pub unsafe fn schedule() {
     serial_print(" new_krsp=");    serial_hex(THREADS[next].krsp);
     serial_print("\n");
     thread_switch(&mut THREADS[cur].krsp as *mut u64, THREADS[next].krsp);
+}
+
+
+/// Przełącz kernel_main na stos idle i uruchom scheduler.
+/// NIGDY nie wraca. Rozwiązuje problem nadpisania THREADS[0].krsp.
+pub unsafe fn jump_to_scheduler() -> ! {
+    // Znajdź najwyżej priorytetowy Ready wątek
+    let mut best = usize::MAX;
+    let mut best_prio = u8::MAX;
+    for i in 0..MAX_THREADS {
+        if THREADS[i].state == TS::Ready && THREADS[i].prio <= best_prio {
+            best_prio = THREADS[i].prio;
+            best = i;
+        }
+    }
+    if best == usize::MAX {
+        // Żaden wątek Ready — uruchom idle (wątek 0) ze jego własnym stosem
+        best = 0;
+    }
+
+    THREADS[best].state = TS::Run;
+    THREADS[best].ticks += 1;
+    CUR.store(best, Ordering::SeqCst);
+    tss_rsp0(THREADS[best].ktop);
+
+    // Przełącz CR3 jeśli potrzeba
+    let ncr3 = THREADS[best].cr3;
+    if ncr3 != 0 {
+        asm!("mov cr3, {}", in(reg) ncr3, options(nostack));
+    }
+
+    serial_print("[BOOT] jumping to thread #");
+    { let mut b=[0u8;24]; serial_print(num_str(best, &mut b)); }
+    serial_print(" krsp="); serial_hex(THREADS[best].krsp);
+    serial_print("\n");
+
+    // Włącz przerwania i załaduj stos wybranego wątku.
+    // Następnie wykonaj pop callee-saved + ret jak robi thread_switch.
+    // To NIE zapisuje aktualnego RSP (kernel_main) do żadnego Thread.
+    let new_krsp = THREADS[best].krsp;
+    asm!(
+        "sti",
+        "mov rsp, {k}",
+        "pop r15",
+        "pop r14",
+        "pop r13",
+        "pop r12",
+        "pop rbp",
+        "pop rbx",
+        "ret",
+        k = in(reg) new_krsp,
+        options(noreturn),
+    );
 }
 
 pub unsafe fn thread_yield() { schedule(); }

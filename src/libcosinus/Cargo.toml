@@ -1,0 +1,13 @@
+[package]
+name    = "libcosinus"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name       = "cosinus"
+crate-type = ["staticlib"]
+
+[profile.release]
+opt-level = "s"
+lto       = true
+panic     = "abort"
