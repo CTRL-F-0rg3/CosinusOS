@@ -137,4 +137,4 @@ fn main(_arg: u64) {
 
     // ── Terminal — główna pętla userspace ─────────────────────────────────────
     terminal::terminal_main();
-}
+} // coś
