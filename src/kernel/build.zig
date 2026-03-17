@@ -1,5 +1,4 @@
 const std = @import("std");
-
 pub fn build(b: *std.Build) void {
     const build_dir = "../../build";
 
@@ -9,10 +8,16 @@ pub fn build(b: *std.Build) void {
         "../../boot.asm", "-o", build_dir ++ "/boot.o",
     });
 
-    // Kompiluj tramp.asm — plik jest w src/tramp.asm
+    // Kompiluj tramp.asm
     const nasm_tramp = b.addSystemCommand(&.{
         "nasm",          "-f", "elf64",
         "src/tramp.asm", "-o", build_dir ++ "/tramp.o",
+    });
+
+    // Kompiluj enter_userspace.asm
+    const nasm_eu = b.addSystemCommand(&.{
+        "nasm",                    "-f", "elf64",
+        "src/enter_userspace.asm", "-o", build_dir ++ "/enter_userspace.o",
     });
 
     // Buduj kernel Rust
@@ -25,7 +30,7 @@ pub fn build(b: *std.Build) void {
         build_dir ++ "/kernel_target",
     });
 
-    // Linkuj: boot.o + tramp.o + libkernel.a
+    // Linkuj: boot.o + tramp.o + enter_userspace.o + libkernel.a
     const link_kernel = b.addSystemCommand(&.{
         "ld",
         "-T",
@@ -40,11 +45,13 @@ pub fn build(b: *std.Build) void {
         build_dir ++ "/kernel.elf",
         build_dir ++ "/boot.o",
         build_dir ++ "/tramp.o",
+        build_dir ++ "/enter_userspace.o",
         build_dir ++ "/kernel_target/x86_64-cosinus/release/libkernel.a",
     });
     link_kernel.step.dependOn(&cargo_kernel.step);
     link_kernel.step.dependOn(&nasm_boot.step);
     link_kernel.step.dependOn(&nasm_tramp.step);
+    link_kernel.step.dependOn(&nasm_eu.step);
 
     // Skopiuj do iso
     const copy_to_iso = b.addSystemCommand(&.{
@@ -53,15 +60,15 @@ pub fn build(b: *std.Build) void {
             build_dir ++ "/kernel.elf ../../iso/boot/kernel.elf",
     });
     copy_to_iso.step.dependOn(&link_kernel.step);
-
     b.default_step.dependOn(&copy_to_iso.step);
 
     // Clean
     const clean = b.step("clean", "Clean kernel");
     const clean_cmd = b.addSystemCommand(&.{
-        "rm",                       "-rf",
-        build_dir ++ "/boot.o",     build_dir ++ "/tramp.o",
-        build_dir ++ "/kernel.elf", build_dir ++ "/kernel_target",
+        "rm",                              "-rf",
+        build_dir ++ "/boot.o",            build_dir ++ "/tramp.o",
+        build_dir ++ "/enter_userspace.o", build_dir ++ "/kernel.elf",
+        build_dir ++ "/kernel_target",
     });
     clean.dependOn(&clean_cmd.step);
 }

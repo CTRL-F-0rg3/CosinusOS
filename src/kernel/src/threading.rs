@@ -165,16 +165,8 @@ pub unsafe fn spawn_user_on_cr3(name: &str, entry: u64, arg: u64, cr3: PhysAddr)
         serial_print("[SPAWN] #");
         { let mut b=[0u8;24]; serial_print(num_str(i,&mut b)); }
         serial_print(" entry="); serial_hex(entry);
-        serial_print(" krsp=");  serial_hex(t.krsp);
-        serial_print("\n");
-        // Dump iretq frame dla debugowania
-        let ksp = t.krsp;
-        serial_print("[FRAME] tramp="); serial_hex(*((ksp+48) as *const u64));
-        serial_print(" RIP=");  serial_hex(*((ksp+56) as *const u64));
-        serial_print(" CS=");   serial_hex(*((ksp+64) as *const u64));
-        serial_print(" FL=");   serial_hex(*((ksp+72) as *const u64));
-        serial_print(" RSP=");  serial_hex(*((ksp+80) as *const u64));
-        serial_print(" SS=");   serial_hex(*((ksp+88) as *const u64));
+        serial_print(" ut=");    serial_hex(ut);
+        serial_print(" kr=");    serial_hex(t.krsp);
         serial_print("\n");
 
         set_name(t, name);
@@ -278,10 +270,40 @@ pub unsafe fn schedule() {
 }
 
 
-/// Przełącz kernel_main na stos idle i uruchom scheduler.
-/// NIGDY nie wraca. Rozwiązuje problem nadpisania THREADS[0].krsp.
+unsafe extern "C" {
+    /// Czysty przeskok ring-0 → ring-3 (enter_userspace.asm)
+    pub fn enter_userspace(entry: u64, stack: u64, arg: u64, cr3: u64) -> !;
+}
+
+/// Uruchom pierwszy wątek userspace bezpośrednio z kernel_main.
+/// Używa enter_userspace.asm — omija scheduler całkowicie.
+/// Scheduler zacznie działać dopiero gdy userspace wyda syscall YIELD
+/// lub timer IRQ odpali schedule().
+pub unsafe fn launch_userspace(entry: u64, stack: u64, arg: u64, cr3: u64) -> ! {
+    // Znajdź kernel stack dla "aktualnego" wątku (idle = 0)
+    // i ustaw TSS.rsp0 tak żeby syscalle z userspace trafiały na poprawny stos
+    // Używamy stosu kterminal (wątek 1) jako stos kernelowy dla userspace
+    // bo kterminal jest dedykowanym wątkiem obsługi kernela
+    let cur = CUR.load(Ordering::Relaxed);
+    tss_rsp0(THREADS[cur].ktop);
+
+    serial_print("[LAUNCH] entry="); serial_hex(entry);
+    serial_print(" stack=");         serial_hex(stack);
+    serial_print(" cr3=");           serial_hex(cr3);
+    serial_print("\n");
+
+    // Włącz przerwania — od teraz timer może wołać schedule()
+    // ale userspace ma własny CR3 i stos więc jest bezpieczny
+    asm!("sti", options(nomem, nostack));
+
+    enter_userspace(entry, stack, arg, cr3);
+}
+
+/// Bezpośredni skok schedulera — używany na końcu kernel_main.
+/// Wybiera najwyżej priorytetowy wątek kernelowy (kterminal)
+/// i przekazuje mu kontrolę. Userspace uruchomi się gdy kterminal
+/// wywoła launch_userspace() lub przez normalny scheduler.
 pub unsafe fn jump_to_scheduler() -> ! {
-    // Znajdź najwyżej priorytetowy Ready wątek
     let mut best = usize::MAX;
     let mut best_prio = u8::MAX;
     for i in 0..MAX_THREADS {
@@ -290,42 +312,28 @@ pub unsafe fn jump_to_scheduler() -> ! {
             best = i;
         }
     }
-    if best == usize::MAX {
-        // Żaden wątek Ready — uruchom idle (wątek 0) ze jego własnym stosem
-        best = 0;
-    }
+    if best == usize::MAX { best = 0; }
 
     THREADS[best].state = TS::Run;
     THREADS[best].ticks += 1;
     CUR.store(best, Ordering::SeqCst);
     tss_rsp0(THREADS[best].ktop);
 
-    // Przełącz CR3 jeśli potrzeba
     let ncr3 = THREADS[best].cr3;
-    if ncr3 != 0 {
-        asm!("mov cr3, {}", in(reg) ncr3, options(nostack));
-    }
+    if ncr3 != 0 { asm!("mov cr3, {}", in(reg) ncr3, options(nostack)); }
 
-    serial_print("[BOOT] jumping to thread #");
-    { let mut b=[0u8;24]; serial_print(num_str(best, &mut b)); }
+    serial_print("[BOOT] jump -> #");
+    { let mut b=[0u8;24]; serial_print(num_str(best,&mut b)); }
     serial_print(" krsp="); serial_hex(THREADS[best].krsp);
     serial_print("\n");
 
-    // Włącz przerwania i załaduj stos wybranego wątku.
-    // Następnie wykonaj pop callee-saved + ret jak robi thread_switch.
-    // To NIE zapisuje aktualnego RSP (kernel_main) do żadnego Thread.
-    let new_krsp = THREADS[best].krsp;
+    let krsp = THREADS[best].krsp;
     asm!(
         "sti",
         "mov rsp, {k}",
-        "pop r15",
-        "pop r14",
-        "pop r13",
-        "pop r12",
-        "pop rbp",
-        "pop rbx",
+        "pop r15", "pop r14", "pop r13", "pop r12", "pop rbp", "pop rbx",
         "ret",
-        k = in(reg) new_krsp,
+        k = in(reg) krsp,
         options(noreturn),
     );
 }

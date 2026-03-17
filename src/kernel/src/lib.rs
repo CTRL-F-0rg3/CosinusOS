@@ -62,6 +62,7 @@ fn panic(info: &PanicInfo) -> ! {
 pub extern "C" fn kernel_main(mb_magic: u64, mb_info: u64) -> ! {
     unsafe {
         asm!("cli", options(nomem, nostack));
+
         cls(); debug::serial_init();
         set_col(col::attr(col::LCYAN, col::BLACK));
         print(" ===========================\n  CosinusOS Microkernel v3.5\n ===========================\n\n");
@@ -91,19 +92,23 @@ pub extern "C" fn kernel_main(mb_magic: u64, mb_info: u64) -> ! {
         debug::log_ok("USB XHCI/EHCI/OHCI + HID", usb_ok);
         if usb_ok { spawn_k("usb\0", usb::usb_thread as *const () as u64, 0); }
 
+        // Kernel terminal — spawnuj ale nie uruchamiaj jeszcze
         spawn_k("kterminal\0", kterminal::run as *const () as u64, 0);
         debug::log_ok("Kernel terminal (PS/2 + COM1)", true);
 
+        // Załaduj userspace (zapisuje entry/stack/cr3, nie spawnuje wątku)
         print("\n"); printc("=== Userspace ===\n", col::YELLOW);
         let loaded = 'load: {
             if mb_magic == userspace_loader::MB2_OK {
                 debug::log_ok("MB2 magic", true);
                 if let Some((s, e)) = userspace_loader::mb2_module(mb_info) {
                     debug::log_ok("Modul MB2", true);
-                    { let mut b=[0u8;18]; print(hex_str(s,&mut b)); } print(" - ");
-                    { let mut b=[0u8;18]; print(hex_str(e,&mut b)); } print("\n");
+                    { let mut b=[0u8;18]; print(hex_str(s,&mut b)); }
+                    print(" - ");
+                    { let mut b=[0u8;18]; print(hex_str(e,&mut b)); }
+                    print("\n");
                     let ok = userspace_loader::load_userspace(s, e);
-                    debug::log_ok("Zaladowanie", ok);
+                    debug::log_ok("Zaladowanie MB2", ok);
                     if ok { break 'load true; }
                 }
                 debug::log_ok("Modul MB2", false);
@@ -112,18 +117,25 @@ pub extern "C" fn kernel_main(mb_magic: u64, mb_info: u64) -> ! {
             debug::log_ok("Embedded", ok);
             break 'load ok;
         };
-        if !loaded { printc("  UWAGA: brak userspace\n", col::LRED); }
 
-        print("\n"); printc("=== system ===\n", col::YELLOW);
-        { let mut b=[0u8;24]; print(num_str(mm_free_kb(),&mut b)); } print(" KB free\n");
-        { let mut b=[0u8;24]; print(num_str(NTHREADS.load(Ordering::Relaxed),&mut b)); } print(" threads\n");
+        print("\n");
+        { let mut b=[0u8;24]; print(num_str(mm_free_kb(),&mut b)); }
+        print(" KB free  ");
+        { let mut b=[0u8;24]; print(num_str(NTHREADS.load(Ordering::Relaxed),&mut b)); }
+        print(" threads\n");
         set_col(col::attr(col::BLACK, col::LGREEN)); print(" [ COMPLETE ] \n");
         set_col(col::WHITE); print("\n");
         serial_print("[OK] boot complete\n");
 
-        // KRYTYCZNE: jump_to_scheduler NIE schedule()
-        // schedule() nadpisałoby THREADS[0].krsp stosem kernel_main
-        // powodując crash gdy scheduler wróci do idle
-        threading::jump_to_scheduler();
+        if loaded {
+            // Userspace załadowany — skocz bezpośrednio do ring-3
+            // Scheduler zacznie działać przez timer IRQ po wejściu do userspace
+            serial_print("[OK] launching userspace directly\n");
+            userspace_loader::run_userspace_direct();
+        } else {
+            // Brak userspace — uruchom kterminal przez scheduler
+            serial_print("[OK] no userspace, starting kterminal\n");
+            threading::jump_to_scheduler();
+        }
     }
 }
