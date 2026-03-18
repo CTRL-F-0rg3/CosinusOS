@@ -292,10 +292,8 @@ pub unsafe fn launch_userspace(entry: u64, stack: u64, arg: u64, cr3: u64) -> ! 
     serial_print(" cr3=");           serial_hex(cr3);
     serial_print("\n");
 
-    // Włącz przerwania — od teraz timer może wołać schedule()
-    // ale userspace ma własny CR3 i stos więc jest bezpieczny
-    asm!("sti", options(nomem, nostack));
-
+    // NIE rób sti tutaj — enter_userspace.asm ma cli na początku
+    // iretq włączy przerwania automatycznie przez RFLAGS.IF=1 w ramce
     enter_userspace(entry, stack, arg, cr3);
 }
 

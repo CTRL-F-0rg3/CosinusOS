@@ -1,42 +1,61 @@
-; CosinusOS — enter_userspace.asm
-; Czysty przeskok ring-0 → ring-3 bez historii schedulera.
-;
-; Wywołanie (C ABI, SysV x86-64):
-;   enter_userspace(entry: u64, stack: u64, arg: u64, cr3: u64)
-;   rdi = entry  — adres _start userspace
-;   rsi = stack  — szczyt user stosu (wyrównany do 16B)
-;   rdx = arg    — argument dla _start (rdi w userspace)
-;   rcx = cr3    — page table userspace
-;
-; Co robi:
-;   1. Ładuje user CR3
-;   2. Ustawia user segmenty (przez iretq, NIE przez mov ds)
-;   3. Czyści wszystkie rejestry
-;   4. iretq → ring-3
-
 [bits 64]
 global enter_userspace
 section .text
 
+; enter_userspace(entry: u64, stack: u64, arg: u64, cr3: u64)
+;   rdi = entry
+;   rsi = stack (user RSP)  
+;   rdx = arg
+;   rcx = cr3
+;
+; Problem: timer IRQ może odpalić się i użyć tego samego stosu kernelowego
+; co zniszczyłoby iretq ramkę.
+;
+; Rozwiązanie: przełącz na dedykowany, izolowany stos zanim zbudujesz ramkę.
+; Używamy stosu userspace (r9) jako tymczasowego stosu kernelowego —
+; jest zmapowany w obu CR3 (K_P4 zawiera mapowania user stacków przez new_user_p4).
+; Po iretq CPU przełączy się na właściwy user RSP z ramki.
+
 enter_userspace:
-    ; Wyłącz przerwania na czas przeskoku
     cli
 
-    ; Załaduj user CR3
-    mov cr3, rcx
+    ; Zapisz argumenty w callee-saved rejestrach
+    mov r12, rdi    ; entry
+    mov r13, rsi    ; stack (user RSP)
+    mov r14, rdx    ; arg
+    mov r15, rcx    ; cr3
 
-    ; Zapisz argumenty w bezpiecznych rejestrach
-    ; rdi = entry, rsi = stack, rdx = arg
-    ; (rdx trzymamy jako arg dla userspace)
-    mov r8,  rdi   ; entry
-    mov r9,  rsi   ; stack (RSP dla ring-3)
-    mov r10, rdx   ; arg → będzie rdi w userspace
+    ; Przełącz na user stack jako tymczasowy stos kernelowy
+    ; User stack jest identity-mapped w K_P4 (new_user_p4 kopiuje K_P4)
+    ; więc jest dostępny przed zmianą CR3
+    ; Ustaw RSP na środek user stacka żeby mieć miejsce na ramkę
+    mov rsp, r13
 
-    ; Wyczyść rejestry które nie są potrzebne
+    ; Wyrównaj RSP do 16 bajtów
+    and rsp, ~0xF
+
+    ; Zbuduj iretq ramkę
+    push 0x23       ; SS
+    push r13        ; RSP user (oryginalna wartość)
+    push 0x202      ; RFLAGS (IF=1)
+    push 0x1B       ; CS user
+    push r12        ; RIP = entry
+
+    ; Zmień CR3
+    mov cr3, r15
+
+    ; Argument
+    mov rdi, r14
+
+    ; Wyczyść
     xor eax, eax
     xor ebx, ebx
     xor ecx, ecx
+    xor edx, edx
     xor esi, esi
+    xor r8d,  r8d
+    xor r9d,  r9d
+    xor r10d, r10d
     xor r11d, r11d
     xor r12d, r12d
     xor r13d, r13d
@@ -44,23 +63,4 @@ enter_userspace:
     xor r15d, r15d
     xor ebp,  ebp
 
-    ; Zbuduj iretq ramkę na AKTUALNYM stosie kernelowym
-    ; iretq pop-uje: RIP, CS, RFLAGS, RSP, SS
-    push 0x23        ; SS  = user data (GDT[4] | RPL=3)
-    push r9          ; RSP = user stack top
-    push 0x202       ; RFLAGS = IF=1, reserved=1
-    push 0x1B        ; CS  = user code (GDT[3] | RPL=3)
-    push r8          ; RIP = entry
-
-    ; Ustaw argument dla _start
-    mov rdi, r10
-
-    ; Debug: wyślij 'E' na port 0xE9 (QEMU debugcon)
-    mov dx,  0xE9
-    mov al,  0x45    ; 'E' = Enter userspace
-    out dx,  al
-
-    ; Skocz do userspace
-    ; iretq zmieni CPL 0→3, załaduje SS/RSP/CS/RIP z ramki
-    ; Przerwania zostaną włączone przez RFLAGS.IF=1
     iretq
