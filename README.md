@@ -8,10 +8,10 @@
 
 ## About the Project
 
-Cosinus OS is a modern operating system designed from the ground up with developers in mind. It combines the lightweight nature of a microkernel, an open ecosystem, and an innovative approach to security.
+Cosinus OS is a modern operating system designed from the ground up with developers in mind. It combines the lightweight nature of a microkernel, an open ecosystem, and an innovative approach to security. 
 
 I put the main emphasis on the microkernel and usability, although I primarily aim at desktop, I still integrate this system with my tools that I created.
-
+Additionally, currently "cosinus os" focuses on ensuring that the ecosystem functions without any problems thanks to integration with linux
 ---
 
 ## Core Pillars
