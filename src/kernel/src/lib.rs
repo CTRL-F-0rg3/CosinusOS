@@ -62,7 +62,6 @@ fn panic(info: &PanicInfo) -> ! {
 pub extern "C" fn kernel_main(mb_magic: u64, mb_info: u64) -> ! {
     unsafe {
         asm!("cli", options(nomem, nostack));
-
         cls(); debug::serial_init();
         set_col(col::attr(col::LCYAN, col::BLACK));
         print(" ===========================\n  CosinusOS Microkernel v3.5\n ===========================\n\n");
@@ -76,27 +75,25 @@ pub extern "C" fn kernel_main(mb_magic: u64, mb_info: u64) -> ! {
         perm::init_gdt(); debug::log_ok("GDT", true);
         perm::init_pic(); debug::log_ok("PIC", true);
         perm::init_idt(); asm!("cli", options(nomem, nostack));
-        debug::log_ok("IDT + IRQ1 + IRQ12", true);
+        debug::log_ok("IDT", true);
 
-        threading::sched_init(); debug::log_ok("Scheduler (idle thread)", true);
+        threading::sched_init(); debug::log_ok("Scheduler", true);
         perm::init_pit(); asm!("cli", options(nomem, nostack));
         debug::log_ok("PIT 100Hz", true);
 
         input::init_ps2(); asm!("cli", options(nomem, nostack));
-        debug::log_ok("PS/2 keyboard + mouse", true);
+        debug::log_ok("PS/2", true);
 
         let disp_ok = display::display_init();
-        debug::log_ok("Display HDMI/DP", disp_ok);
+        debug::log_ok("Display", disp_ok);
 
         let usb_ok = usb::usb_init();
-        debug::log_ok("USB XHCI/EHCI/OHCI + HID", usb_ok);
+        debug::log_ok("USB", usb_ok);
         if usb_ok { spawn_k("usb\0", usb::usb_thread as *const () as u64, 0); }
 
-        // Kernel terminal — spawnuj ale nie uruchamiaj jeszcze
         spawn_k("kterminal\0", kterminal::run as *const () as u64, 0);
-        debug::log_ok("Kernel terminal (PS/2 + COM1)", true);
+        debug::log_ok("kterminal", true);
 
-        // Załaduj userspace (zapisuje entry/stack/cr3, nie spawnuje wątku)
         print("\n"); printc("=== Userspace ===\n", col::YELLOW);
         let loaded = 'load: {
             if mb_magic == userspace_loader::MB2_OK {
@@ -108,7 +105,7 @@ pub extern "C" fn kernel_main(mb_magic: u64, mb_info: u64) -> ! {
                     { let mut b=[0u8;18]; print(hex_str(e,&mut b)); }
                     print("\n");
                     let ok = userspace_loader::load_userspace(s, e);
-                    debug::log_ok("Zaladowanie MB2", ok);
+                    debug::log_ok("Zaladowanie", ok);
                     if ok { break 'load true; }
                 }
                 debug::log_ok("Modul MB2", false);
@@ -118,23 +115,17 @@ pub extern "C" fn kernel_main(mb_magic: u64, mb_info: u64) -> ! {
             break 'load ok;
         };
 
-        print("\n");
-        { let mut b=[0u8;24]; print(num_str(mm_free_kb(),&mut b)); }
-        print(" KB free  ");
-        { let mut b=[0u8;24]; print(num_str(NTHREADS.load(Ordering::Relaxed),&mut b)); }
-        print(" threads\n");
+        { let mut b=[0u8;24]; print(num_str(mm_free_kb(),&mut b)); } print(" KB free\n");
         set_col(col::attr(col::BLACK, col::LGREEN)); print(" [ COMPLETE ] \n");
         set_col(col::WHITE); print("\n");
         serial_print("[OK] boot complete\n");
 
         if loaded {
-            // Userspace załadowany — skocz bezpośrednio do ring-3
-            // Scheduler zacznie działać przez timer IRQ po wejściu do userspace
-            serial_print("[OK] launching userspace directly\n");
+            // Bezpośredni przeskok ring-0 → ring-3
+            // Scheduler (timer IRQ) zacznie działać po wejściu do userspace
             userspace_loader::run_userspace_direct();
         } else {
-            // Brak userspace — uruchom kterminal przez scheduler
-            serial_print("[OK] no userspace, starting kterminal\n");
+            // Brak userspace — kterminal przez scheduler
             threading::jump_to_scheduler();
         }
     }

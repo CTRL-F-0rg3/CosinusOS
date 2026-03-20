@@ -4,10 +4,7 @@
 use crate::mm::{PhysAddr, VirtAddr, PAGE_SIZE, PTE_W, PTE_U, mm_alloc, vmap, new_user_p4};
 use crate::debug::{col, print, printc, num_str, hex_str};
 
-pub static mut US_ENTRY: VirtAddr  = 0;
-pub static mut US_STACK: VirtAddr  = 0;
-pub static mut US_CR3:   PhysAddr  = 0;
-pub static mut US_READY: bool      = false;
+pub static mut US_ENTRY: VirtAddr = 0;
 
 // ── Multiboot2 structs ────────────────────────────────────────────────────────
 #[repr(C, packed)] struct Mb2Hdr { total: u32, _res: u32 }
@@ -143,19 +140,26 @@ unsafe fn load_elf64(elf: *const u8, _sz: usize) -> bool {
     spawn_and_report("userspace", e_entry, 0, cr3)
 }
 
-// ── Helper: zapisz dane userspace do późniejszego uruchomienia ───────────────
-unsafe fn spawn_and_report(name: &str, entry: u64, arg: u64, cr3: PhysAddr) -> bool {
-    // Zaalokuj user stack — 64KB pod 0x800_0000
+// ── Statyczne dane userspace ─────────────────────────────────────────────────
+pub static mut US_STACK: VirtAddr = 0;
+pub static mut US_CR3:   PhysAddr = 0;
+pub static mut US_READY: bool     = false;
+
+// ── Helper: zapisz dane, zaalokuj stos ───────────────────────────────────────
+unsafe fn spawn_and_report(_name: &str, entry: u64, _arg: u64, cr3: PhysAddr) -> bool {
     use crate::mm::{PAGE_SIZE, mm_alloc, vmap, PTE_W, PTE_U};
-    const USER_STACK_VIRT: u64 = 0x07F0_0000;
-    const USER_STACK_PAGES: usize = 16; // 64KB
-    for p in 0..USER_STACK_PAGES {
+
+    // Stos userspace: 64KB pod 0x07F0_0000
+    const STACK_BASE:  u64   = 0x07F0_0000;
+    const STACK_PAGES: usize = 16;
+    for p in 0..STACK_PAGES {
         let phys = mm_alloc();
-        vmap(cr3, USER_STACK_VIRT + p as u64 * PAGE_SIZE as u64, phys, PTE_W | PTE_U);
+        if phys == 0 { printc("[US] OOM stack\n", col::LRED); return false; }
+        core::ptr::write_bytes(phys as *mut u8, 0, PAGE_SIZE);
+        vmap(cr3, STACK_BASE + p as u64 * PAGE_SIZE as u64, phys, PTE_W | PTE_U);
     }
-    let stack_top = USER_STACK_VIRT + USER_STACK_PAGES as u64 * PAGE_SIZE as u64;
-    // Wyrównaj RSP do 16B - 8 (ABI wymaga RSP % 16 == 8 przy call)
-    let stack_top = (stack_top & !0xF) - 8;
+    // RSP: szczyt stosu, wyrównany (ABI: rsp%16==0 przy wejściu do funkcji)
+    let stack_top = (STACK_BASE + STACK_PAGES as u64 * PAGE_SIZE as u64) & !0xF;
 
     US_ENTRY = entry;
     US_STACK = stack_top;
@@ -163,40 +167,36 @@ unsafe fn spawn_and_report(name: &str, entry: u64, arg: u64, cr3: PhysAddr) -> b
     US_READY = true;
 
     printc("[US] Userspace gotowy: entry=", col::LGREEN);
-    { let mut b=[0u8;18]; print(crate::debug::hex_str(entry,&mut b)); }
+    { let mut b=[0u8;18]; print(crate::debug::hex_str(entry,     &mut b)); }
     print(" stack=");
-    { let mut b=[0u8;18]; print(crate::debug::hex_str(stack_top,&mut b)); }
+    { let mut b=[0u8;18]; print(crate::debug::hex_str(stack_top, &mut b)); }
     print("\n");
     true
 }
 
-/// Uruchom userspace bezpośrednio (wywołaj z kernel_main po boot).
+/// Uruchom userspace bezpośrednio z kernel_main (ring-0 → ring-3).
+/// Musi być wywołane PO zakończeniu całego boot-u.
 pub unsafe fn run_userspace_direct() -> ! {
-    if !US_READY {
-        crate::panic_no_dyn("run_userspace_direct: brak zaladowanego userspace");
-    }
-    // Ustaw TSS.rsp0 na stos kernelowy wątku 1 (kterminal)
-    // żeby syscalle z userspace trafiały na poprawny stos
-    use crate::threading::{THREADS, CUR, MAX_THREADS};
-    use core::sync::atomic::Ordering;
-    // Znajdź kterminal i ustaw jego ktop jako RSP0
+    if !US_READY { crate::panic_no_dyn("brak userspace"); }
+
+    // TSS.rsp0 = stos kernelowy dla syscalli z ring-3
+    // Używamy dedykowanego stosu który nie koliduje z niczym
+    // Znajdujemy kterminal i bierzemy jego ktop
+    use crate::threading::{THREADS, MAX_THREADS};
     for i in 0..MAX_THREADS {
-        if THREADS[i].name_str().starts_with("kterminal") {
+        if THREADS[i].state != crate::threading::TS::Dead
+        && THREADS[i].name_str().starts_with("kterminal") {
             crate::perm::tss_rsp0(THREADS[i].ktop);
-            CUR.store(i, Ordering::SeqCst);
-            crate::debug::serial_print("[US] tss_rsp0=kterminal #");
+            crate::debug::serial_print("[US] rsp0=kterminal#");
             { let mut b=[0u8;24]; crate::debug::serial_print(crate::debug::num_str(i,&mut b)); }
+            crate::debug::serial_print(" ktop=");
+            { let mut b=[0u8;18]; crate::debug::serial_print(crate::debug::hex_str(THREADS[i].ktop,&mut b)); }
             crate::debug::serial_print("\n");
             break;
         }
     }
 
-    crate::debug::serial_print("[US] launching entry=");
-    { let mut b=[0u8;18]; crate::debug::serial_print(crate::debug::hex_str(US_ENTRY,&mut b)); }
-    crate::debug::serial_print(" stack=");
-    { let mut b=[0u8;18]; crate::debug::serial_print(crate::debug::hex_str(US_STACK,&mut b)); }
-    crate::debug::serial_print("\n");
-
+    crate::debug::serial_print("[US] enter_userspace\n");
     crate::threading::enter_userspace(US_ENTRY, US_STACK, 0, US_CR3);
 }
 unsafe extern "C" {
@@ -204,11 +204,8 @@ unsafe extern "C" {
     static _userspace_blob_end:   u8;
 }
 pub unsafe fn load_embedded() -> bool {
-    let start = core::ptr::addr_of!(_userspace_blob_start) as u64;
-    let end   = core::ptr::addr_of!(_userspace_blob_end)   as u64;
-    if start == 0 || end <= start || (end-start) < 4 {
-        crate::debug::serial_print("[EMB] brak blob\n");
-        return false;
-    }
-    load_userspace(start, end)
+    let s = core::ptr::addr_of!(_userspace_blob_start) as u64;
+    let e = core::ptr::addr_of!(_userspace_blob_end) as u64;
+    if s == 0 || e <= s || (e-s) < 4 { return false; }
+    load_userspace(s, e)
 }

@@ -162,13 +162,6 @@ pub unsafe fn spawn_user_on_cr3(name: &str, entry: u64, arg: u64, cr3: PhysAddr)
         t.ktop = kt; t.utop = ut; t.cr3 = cr3; t.ticks = 0;
         init_thread_stack(t, kt, ut, entry, arg, true);
 
-        serial_print("[SPAWN] #");
-        { let mut b=[0u8;24]; serial_print(num_str(i,&mut b)); }
-        serial_print(" entry="); serial_hex(entry);
-        serial_print(" ut=");    serial_hex(ut);
-        serial_print(" kr=");    serial_hex(t.krsp);
-        serial_print("\n");
-
         set_name(t, name);
         t.state = TS::Ready;
         NTHREADS.fetch_add(1, Ordering::Relaxed);
@@ -271,36 +264,9 @@ pub unsafe fn schedule() {
 
 
 unsafe extern "C" {
-    /// Czysty przeskok ring-0 → ring-3 (enter_userspace.asm)
     pub fn enter_userspace(entry: u64, stack: u64, arg: u64, cr3: u64) -> !;
 }
 
-/// Uruchom pierwszy wątek userspace bezpośrednio z kernel_main.
-/// Używa enter_userspace.asm — omija scheduler całkowicie.
-/// Scheduler zacznie działać dopiero gdy userspace wyda syscall YIELD
-/// lub timer IRQ odpali schedule().
-pub unsafe fn launch_userspace(entry: u64, stack: u64, arg: u64, cr3: u64) -> ! {
-    // Znajdź kernel stack dla "aktualnego" wątku (idle = 0)
-    // i ustaw TSS.rsp0 tak żeby syscalle z userspace trafiały na poprawny stos
-    // Używamy stosu kterminal (wątek 1) jako stos kernelowy dla userspace
-    // bo kterminal jest dedykowanym wątkiem obsługi kernela
-    let cur = CUR.load(Ordering::Relaxed);
-    tss_rsp0(THREADS[cur].ktop);
-
-    serial_print("[LAUNCH] entry="); serial_hex(entry);
-    serial_print(" stack=");         serial_hex(stack);
-    serial_print(" cr3=");           serial_hex(cr3);
-    serial_print("\n");
-
-    // NIE rób sti tutaj — enter_userspace.asm ma cli na początku
-    // iretq włączy przerwania automatycznie przez RFLAGS.IF=1 w ramce
-    enter_userspace(entry, stack, arg, cr3);
-}
-
-/// Bezpośredni skok schedulera — używany na końcu kernel_main.
-/// Wybiera najwyżej priorytetowy wątek kernelowy (kterminal)
-/// i przekazuje mu kontrolę. Userspace uruchomi się gdy kterminal
-/// wywoła launch_userspace() lub przez normalny scheduler.
 pub unsafe fn jump_to_scheduler() -> ! {
     let mut best = usize::MAX;
     let mut best_prio = u8::MAX;
@@ -311,25 +277,20 @@ pub unsafe fn jump_to_scheduler() -> ! {
         }
     }
     if best == usize::MAX { best = 0; }
-
     THREADS[best].state = TS::Run;
     THREADS[best].ticks += 1;
     CUR.store(best, Ordering::SeqCst);
     tss_rsp0(THREADS[best].ktop);
-
     let ncr3 = THREADS[best].cr3;
     if ncr3 != 0 { asm!("mov cr3, {}", in(reg) ncr3, options(nostack)); }
-
-    serial_print("[BOOT] jump -> #");
+    serial_print("[BOOT] -> #");
     { let mut b=[0u8;24]; serial_print(num_str(best,&mut b)); }
-    serial_print(" krsp="); serial_hex(THREADS[best].krsp);
     serial_print("\n");
-
     let krsp = THREADS[best].krsp;
     asm!(
         "sti",
         "mov rsp, {k}",
-        "pop r15", "pop r14", "pop r13", "pop r12", "pop rbp", "pop rbx",
+        "pop r15","pop r14","pop r13","pop r12","pop rbp","pop rbx",
         "ret",
         k = in(reg) krsp,
         options(noreturn),
