@@ -11,6 +11,9 @@ SECTIONS {
     }
 
     .text : ALIGN(16) {
+        /* Trampoliny muszą być w .text razem z resztą kernela */
+        *tramp.o(.text)
+        *enter_userspace.o(.text)
         *(.text .text.*)
     }
 
@@ -32,17 +35,6 @@ SECTIONS {
         __bss_end = .;
     }
 
-    /* ── Embedded userspace blob (opcjonalne) ──────────────────────────────
-     * Gdy userspace_blob.o jest dołączony do linkowania (przez objcopy),
-     * _userspace_blob_start/_end wskazują na binarke userspace.
-     * Gdy plik nie jest dołączony, obie etykiety mają tę samą wartość
-     * (start == end) i load_embedded() zwraca false.
-     *
-     * Jak wygenerować userspace_blob.o:
-     *   objcopy -I binary -O elf64-x86-64 \
-     *       --rename-section .data=.userspace_blob \
-     *       build/userspace.bin build/userspace_blob.o
-     * ─────────────────────────────────────────────────────────────────── */
     .userspace : ALIGN(4096) {
         _userspace_blob_start = .;
         KEEP(*(.userspace_blob))

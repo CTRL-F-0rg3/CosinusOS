@@ -133,7 +133,7 @@ pub unsafe fn init_idt() {
     IDTR.lim  = (core::mem::size_of::<[IdtE; IDT_LEN]>() - 1) as u16;
     IDTR.base = IDT.as_ptr() as u64;
     asm!("lidt [{}]", in(reg) &raw const IDTR, options(preserves_flags));
-    // Bez sti — kernel_main włącza przerwania dopiero po pełnym boot
+    asm!("sti", options(nomem, nostack));
 }
 
 // ── PIC ──────────────────────────────────────────────────────────────────────
@@ -154,7 +154,7 @@ pub unsafe fn init_pit() {
     outb(0x43, 0x36);
     outb(0x40, (d & 0xFF) as u8);
     outb(0x40, (d >> 8) as u8);
-    // Bez sti — kernel_main włącza przerwania dopiero po pełnym boot
+    asm!("sti", options(nomem, nostack));
 }
 
 // ── ISR helpers ───────────────────────────────────────────────────────────────
@@ -237,6 +237,46 @@ pub unsafe extern "C" fn handle_gp(f: *mut TF) {
     print("  rsp="); { let mut b=[0u8;18]; print(hex_str((*f).rsp, &mut b)); }
     print("   ss="); { let mut b=[0u8;18]; print(hex_str((*f).ss,  &mut b)); }
     print("\n");
+
+    use crate::threading::{THREADS, CUR, MAX_THREADS, TS};
+    use core::sync::atomic::Ordering;
+    let cur = CUR.load(Ordering::Relaxed);
+
+    // Serial: który wątek i dump stosu
+    crate::debug::serial_print("[#GP] cur=#");
+    { let mut b=[0u8;24]; crate::debug::serial_print(crate::debug::num_str(cur,&mut b)); }
+    crate::debug::serial_print(" ");
+    crate::debug::serial_print(THREADS[cur].name_str());
+    crate::debug::serial_print(" krsp=");
+    { let mut b=[0u8;18]; crate::debug::serial_print(crate::debug::hex_str(THREADS[cur].krsp,&mut b)); }
+    crate::debug::serial_print("\n");
+
+    // Dump wszystkich wątków
+    for i in 0..MAX_THREADS {
+        if THREADS[i].state == TS::Dead { continue; }
+        crate::debug::serial_print("[T#");
+        { let mut b=[0u8;24]; crate::debug::serial_print(crate::debug::num_str(i,&mut b)); }
+        crate::debug::serial_print("] ");
+        crate::debug::serial_print(THREADS[i].name_str());
+        crate::debug::serial_print(" krsp=");
+        { let mut b=[0u8;18]; crate::debug::serial_print(crate::debug::hex_str(THREADS[i].krsp,&mut b)); }
+        crate::debug::serial_print("\n");
+    }
+
+    // Dump 8 słów od krsp wątku 1 (kterminal)
+    crate::debug::serial_print("[KTERM STACK]\n");
+    let ksp = THREADS[1].krsp;
+    for i in 0..10usize {
+        let addr = ksp + i as u64 * 8;
+        crate::debug::serial_print("  +");
+        { let mut b=[0u8;24]; crate::debug::serial_print(crate::debug::num_str(i*8,&mut b)); }
+        crate::debug::serial_print(" [");
+        { let mut b=[0u8;18]; crate::debug::serial_print(crate::debug::hex_str(addr,&mut b)); }
+        crate::debug::serial_print("]=");
+        { let mut b=[0u8;18]; crate::debug::serial_print(crate::debug::hex_str(*(addr as *const u64),&mut b)); }
+        crate::debug::serial_print("\n");
+    }
+
     crate::panic_no_dyn("Unhandled #GP");
 }
 
