@@ -9,7 +9,6 @@ use core::{arch::asm, panic::PanicInfo, sync::atomic::Ordering};
 pub mod sync;
 pub mod debug;
 pub mod mm;
-pub mod valloc;
 pub mod perm;
 pub mod input;
 pub mod threading;
@@ -121,11 +120,8 @@ pub extern "C" fn kernel_main(mb_magic: u64, mb_info: u64) -> ! {
         serial_print("[OK] boot complete\n");
 
         if loaded {
-            // Bezpośredni przeskok ring-0 → ring-3
-            // Scheduler (timer IRQ) zacznie działać po wejściu do userspace
             userspace_loader::run_userspace_direct();
         } else {
-            // Brak userspace — kterminal przez scheduler
             threading::jump_to_scheduler();
         }
     }

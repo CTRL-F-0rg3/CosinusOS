@@ -5,6 +5,9 @@ use crate::mm::{PhysAddr, VirtAddr, PAGE_SIZE, PTE_W, PTE_U, mm_alloc, vmap, new
 use crate::debug::{col, print, printc, num_str, hex_str};
 
 pub static mut US_ENTRY: VirtAddr = 0;
+pub static mut US_STACK: VirtAddr = 0;
+pub static mut US_CR3: crate::mm::PhysAddr = 0;
+pub static mut US_READY: bool = false;
 
 // ── Multiboot2 structs ────────────────────────────────────────────────────────
 #[repr(C, packed)] struct Mb2Hdr { total: u32, _res: u32 }
@@ -140,53 +143,32 @@ unsafe fn load_elf64(elf: *const u8, _sz: usize) -> bool {
     spawn_and_report("userspace", e_entry, 0, cr3)
 }
 
-// ── Statyczne dane userspace ─────────────────────────────────────────────────
-pub static mut US_STACK: VirtAddr = 0;
-pub static mut US_CR3:   PhysAddr = 0;
-pub static mut US_READY: bool     = false;
-
-// ── Helper: zapisz dane, zaalokuj stos ───────────────────────────────────────
+// ── Helper: spawn + log ───────────────────────────────────────────────────────
 unsafe fn spawn_and_report(_name: &str, entry: u64, _arg: u64, cr3: PhysAddr) -> bool {
     use crate::mm::{PAGE_SIZE, mm_alloc, vmap, PTE_W, PTE_U};
-
-    // Stos userspace: 64KB pod 0x07F0_0000
-    const STACK_BASE:  u64   = 0x07F0_0000;
+    const STACK_BASE: u64 = 0x07F0_0000;
     const STACK_PAGES: usize = 16;
     for p in 0..STACK_PAGES {
         let phys = mm_alloc();
-        if phys == 0 { printc("[US] OOM stack\n", col::LRED); return false; }
+        if phys == 0 { return false; }
         core::ptr::write_bytes(phys as *mut u8, 0, PAGE_SIZE);
         vmap(cr3, STACK_BASE + p as u64 * PAGE_SIZE as u64, phys, PTE_W | PTE_U);
     }
-    // RSP: szczyt stosu, wyrównany (ABI: rsp%16==0 przy wejściu do funkcji)
     let stack_top = (STACK_BASE + STACK_PAGES as u64 * PAGE_SIZE as u64) & !0xF;
-
-    US_ENTRY = entry;
-    US_STACK = stack_top;
-    US_CR3   = cr3;
-    US_READY = true;
-
+    US_ENTRY = entry; US_STACK = stack_top; US_CR3 = cr3; US_READY = true;
     printc("[US] Userspace gotowy: entry=", col::LGREEN);
-    { let mut b=[0u8;18]; print(crate::debug::hex_str(entry,     &mut b)); }
+    { let mut b=[0u8;18]; print(crate::debug::hex_str(entry,&mut b)); }
     print(" stack=");
-    { let mut b=[0u8;18]; print(crate::debug::hex_str(stack_top, &mut b)); }
+    { let mut b=[0u8;18]; print(crate::debug::hex_str(stack_top,&mut b)); }
     print("\n");
     true
 }
 
-/// Uruchom userspace bezpośrednio z kernel_main (ring-0 → ring-3).
-/// Musi być wywołane PO zakończeniu całego boot-u.
 pub unsafe fn run_userspace_direct() -> ! {
     if !US_READY { crate::panic_no_dyn("brak userspace"); }
-
-    // TSS.rsp0 = stos kernelowy dla syscalli z ring-3
-    // Używamy dedykowanego stosu który nie koliduje z niczym
-    // Znajdujemy kterminal i bierzemy jego ktop
-    use crate::threading::{THREADS, MAX_THREADS};
+    use crate::threading::{THREADS, MAX_THREADS, TS};
     for i in 0..MAX_THREADS {
-        if THREADS[i].state != crate::threading::TS::Dead
-        && THREADS[i].name_str().starts_with("kterminal") {
-            crate::perm::tss_rsp0(THREADS[i].ktop);
+        if THREADS[i].state != TS::Dead && THREADS[i].name_str().starts_with("kterminal") {
             crate::debug::serial_print("[US] rsp0=kterminal#");
             { let mut b=[0u8;24]; crate::debug::serial_print(crate::debug::num_str(i,&mut b)); }
             crate::debug::serial_print(" ktop=");
@@ -195,17 +177,16 @@ pub unsafe fn run_userspace_direct() -> ! {
             break;
         }
     }
-
+    // KRYTYCZNE: IRQ stack zamiast stosu kterminal
+    crate::perm::tss_use_irq_stack();
+    crate::debug::serial_print("[US] irq_stack=");
+    { let mut b=[0u8;18]; crate::debug::serial_print(crate::debug::hex_str(crate::perm::irq_stack_top(),&mut b)); }
+    crate::debug::serial_print("\n");
     crate::debug::serial_print("[US] enter_userspace\n");
     crate::threading::enter_userspace(US_ENTRY, US_STACK, 0, US_CR3);
 }
-unsafe extern "C" {
-    static _userspace_blob_start: u8;
-    static _userspace_blob_end:   u8;
-}
+
 pub unsafe fn load_embedded() -> bool {
-    let s = core::ptr::addr_of!(_userspace_blob_start) as u64;
-    let e = core::ptr::addr_of!(_userspace_blob_end) as u64;
-    if s == 0 || e <= s || (e-s) < 4 { return false; }
-    load_userspace(s, e)
+    crate::debug::serial_print("[EMB] brak embedded blob\n");
+    false
 }
