@@ -3,11 +3,9 @@
 
 use crate::mm::{PhysAddr, VirtAddr, PAGE_SIZE, PTE_W, PTE_U, mm_alloc, vmap, new_user_p4};
 use crate::debug::{col, print, printc, num_str, hex_str};
+use crate::threading::spawn_user_on_cr3;
 
 pub static mut US_ENTRY: VirtAddr = 0;
-pub static mut US_STACK: VirtAddr = 0;
-pub static mut US_CR3: crate::mm::PhysAddr = 0;
-pub static mut US_READY: bool = false;
 
 // ── Multiboot2 structs ────────────────────────────────────────────────────────
 #[repr(C, packed)] struct Mb2Hdr { total: u32, _res: u32 }
@@ -101,7 +99,7 @@ unsafe fn load_elf64(elf: *const u8, _sz: usize) -> bool {
         let p_memsz  = *(ph.add(0x28) as *const u64);
         if p_memsz == 0 { continue; }
 
-        let p_memsz = core::cmp::min(p_memsz, 2 * 1024 * 1024); // max 2MB na segment
+        let p_memsz_clamped = core::cmp::min(p_memsz, 64 * 1024 * 1024); // max 64MB na segment
 
         let mut perm = PTE_U;
         if p_flags & 0x2 != 0 { perm |= PTE_W; }
@@ -144,66 +142,15 @@ unsafe fn load_elf64(elf: *const u8, _sz: usize) -> bool {
 }
 
 // ── Helper: spawn + log ───────────────────────────────────────────────────────
-unsafe fn spawn_and_report(_name: &str, entry: u64, _arg: u64, cr3: PhysAddr) -> bool {
-    use crate::mm::{PAGE_SIZE, mm_alloc, vmap, PTE_W, PTE_U};
-    const STACK_BASE: u64 = 0x07F0_0000;
-    const STACK_PAGES: usize = 16;
-    for p in 0..STACK_PAGES {
-        let phys = mm_alloc();
-        if phys == 0 { return false; }
-        core::ptr::write_bytes(phys as *mut u8, 0, PAGE_SIZE);
-        vmap(cr3, STACK_BASE + p as u64 * PAGE_SIZE as u64, phys, PTE_W | PTE_U);
+unsafe fn spawn_and_report(name: &str, entry: u64, arg: u64, cr3: PhysAddr) -> bool {
+    let tid = spawn_user_on_cr3(name, entry, arg, cr3);
+    if tid >= 0 {
+        printc("[US] Watek #", col::LGREEN);
+        { let mut b = [0u8; 24]; print(num_str(tid as usize, &mut b)); }
+        print(" OK\n");
+        true
+    } else {
+        printc("[US] Brak slotow!\n", col::LRED);
+        false
     }
-    let stack_top = (STACK_BASE + STACK_PAGES as u64 * PAGE_SIZE as u64) & !0xF;
-    US_ENTRY = entry; US_STACK = stack_top; US_CR3 = cr3; US_READY = true;
-    printc("[US] Userspace gotowy: entry=", col::LGREEN);
-    { let mut b=[0u8;18]; print(crate::debug::hex_str(entry,&mut b)); }
-    print(" stack=");
-    { let mut b=[0u8;18]; print(crate::debug::hex_str(stack_top,&mut b)); }
-    print("\n");
-    true
-}
-
-pub unsafe fn run_userspace_direct() -> ! {
-    if !US_READY { crate::panic_no_dyn("brak userspace"); }
-
-    crate::debug::serial_print("[US] run_userspace_direct\n");
-
-    // Ustaw IRQ stack jako TSS.rsp0
-    crate::perm::tss_use_irq_stack();
-
-    crate::debug::serial_print("[US] irq_stack_top=");
-    { let mut b=[0u8;18]; crate::debug::serial_print(crate::debug::hex_str(crate::perm::irq_stack_top(),&mut b)); }
-    crate::debug::serial_print("\n");
-
-    // Zarejestruj userspace jako wątek #2
-    // Używamy stałego slotu 2 — bez pętli, bez copy_from_slice
-    use crate::threading::{THREADS, CUR, TS};
-    use core::sync::atomic::Ordering;
-
-    THREADS[2].state        = TS::Run;
-    THREADS[2].cr3          = US_CR3;
-    THREADS[2].ktop         = crate::perm::irq_stack_top();
-    THREADS[2].prio         = 5;
-    THREADS[2].id           = 2;
-    // Ustaw nazwę znak po znaku — bez slice
-    THREADS[2].name[0] = b'u'; THREADS[2].name[1] = b's'; THREADS[2].name[2] = b'e';
-    THREADS[2].name[3] = b'r'; THREADS[2].name[4] = b's'; THREADS[2].name[5] = b'p';
-    THREADS[2].name[6] = b'a'; THREADS[2].name[7] = b'c'; THREADS[2].name[8] = b'e';
-    THREADS[2].name[9] = 0;
-
-    CUR.store(2, Ordering::SeqCst);
-
-    crate::debug::serial_print("[US] slot=2 cr3=");
-    { let mut b=[0u8;18]; crate::debug::serial_print(crate::debug::hex_str(US_CR3,&mut b)); }
-    crate::debug::serial_print("\n");
-    crate::debug::serial_print("[US] enter_userspace\n");
-
-    crate::threading::enter_userspace(US_ENTRY, US_STACK, 0, US_CR3);
-}
-
-
-pub unsafe fn load_embedded() -> bool {
-    crate::debug::serial_print("[EMB] brak embedded blob\n");
-    false
 }
