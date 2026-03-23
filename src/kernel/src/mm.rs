@@ -126,19 +126,23 @@ unsafe fn goc(tab: PhysAddr, idx: usize, flags: u64) -> PhysAddr {
     if !pte_present(t.e[idx]) {
         let c = zpg();
         t.e[idx] = pte_make(c, flags);
-    } else if t.e[idx] & (1 << 7) != 0 {
-        // Rozbij huge page na 4KB
-        let huge_phys = t.e[idx] & 0x000F_FFFF_FFE0_0000;
-        let c = zpg();
-        let p1 = &mut *pt_ptr(c);
-        for j in 0..512usize {
-            let phys = huge_phys + j as u64 * PAGE_SIZE as u64;
-            p1.e[j] = pte_make(phys, PTE_W);
+    } else {
+        // Wpis istnieje — dodaj wymagane flagi (np. PTE_U dla userspace)
+        t.e[idx] |= flags & (PTE_W | PTE_U);
+        // Rozbij huge page jeśli potrzeba
+        if t.e[idx] & (1 << 7) != 0 {
+            let huge_phys = t.e[idx] & 0x000F_FFFF_FFE0_0000;
+            let c = zpg();
+            let p1 = &mut *pt_ptr(c);
+            for j in 0..512usize {
+                let phys = huge_phys + j as u64 * PAGE_SIZE as u64;
+                p1.e[j] = pte_make(phys, PTE_W);
+            }
+            t.e[idx] = pte_make(c, flags);
+            let cr3: u64;
+            asm!("mov {}, cr3", out(reg) cr3, options(nomem, nostack));
+            asm!("mov cr3, {}", in(reg) cr3, options(nostack));
         }
-        t.e[idx] = pte_make(c, flags);
-        let cr3: u64;
-        asm!("mov {}, cr3", out(reg) cr3, options(nomem, nostack));
-        asm!("mov cr3, {}", in(reg) cr3, options(nostack));
     }
     pte_addr(t.e[idx])
 }

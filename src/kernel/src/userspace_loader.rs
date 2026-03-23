@@ -166,65 +166,42 @@ unsafe fn spawn_and_report(_name: &str, entry: u64, _arg: u64, cr3: PhysAddr) ->
 
 pub unsafe fn run_userspace_direct() -> ! {
     if !US_READY { crate::panic_no_dyn("brak userspace"); }
-    use crate::threading::{THREADS, CUR, MAX_THREADS, TS};
-    for i in 0..MAX_THREADS {
-        if THREADS[i].state != TS::Dead && THREADS[i].name_str().starts_with("kterminal") {
-            crate::debug::serial_print("[US] rsp0=kterminal#");
-            { let mut b=[0u8;24]; crate::debug::serial_print(crate::debug::num_str(i,&mut b)); }
-            crate::debug::serial_print(" ktop=");
-            { let mut b=[0u8;18]; crate::debug::serial_print(crate::debug::hex_str(THREADS[i].ktop,&mut b)); }
-            crate::debug::serial_print("\n");
-            break;
-        }
-    }
-    // KRYTYCZNE: IRQ stack zamiast stosu kterminal
+
+    crate::debug::serial_print("[US] run_userspace_direct\n");
+
+    // Ustaw IRQ stack jako TSS.rsp0
     crate::perm::tss_use_irq_stack();
-    crate::debug::serial_print("[US] irq_stack=");
+
+    crate::debug::serial_print("[US] irq_stack_top=");
     { let mut b=[0u8;18]; crate::debug::serial_print(crate::debug::hex_str(crate::perm::irq_stack_top(),&mut b)); }
     crate::debug::serial_print("\n");
-    // Zarejestruj userspace w THREADS żeby scheduler mógł zarządzać CR3
-    // Gdy IRQ timer odpali się w ring-3, schedule() musi wiedzieć
-    // że aktualny wątek (CUR) ma cr3=US_CR3 — inaczej ładuje K_P4
-    // i userspace dostaje #PF bo ELF nie jest zmapowany w K_P4
+
+    // Zarejestruj userspace jako wątek #2
+    // Używamy stałego slotu 2 — bez pętli, bez copy_from_slice
+    use crate::threading::{THREADS, CUR, TS};
     use core::sync::atomic::Ordering;
-    
-    // Znajdź slot dla userspace (slot 2 lub pierwszy wolny)
-    let us_slot = {
-        let mut slot = usize::MAX;
-        for i in 2..MAX_THREADS {
-            if THREADS[i].state == TS::Dead {
-                slot = i;
-                break;
-            }
-        }
-        slot
-    };
-    
-    if us_slot == usize::MAX {
-        crate::panic_no_dyn("brak slotu dla userspace");
-    }
-    
-    // Inicjalizuj slot minimalnie — tylko CR3 i stan
-    THREADS[us_slot].cr3   = US_CR3;
-    THREADS[us_slot].ktop  = crate::perm::irq_stack_top(); // RSP0 dla syscall
-    THREADS[us_slot].state = TS::Run;
-    THREADS[us_slot].prio  = 5;
-    // Ustaw nazwę
-    let name = b"userspace      ";
-    THREADS[us_slot].name[..16].copy_from_slice(name);
-    
-    // Ustaw CUR na slot userspace
-    // Teraz scheduler wie że "aktualny wątek" ma cr3=US_CR3
-    CUR.store(us_slot, Ordering::SeqCst);
-    
-    crate::debug::serial_print("[US] slot=");
-    { let mut b=[0u8;24]; crate::debug::serial_print(crate::debug::num_str(us_slot,&mut b)); }
-    crate::debug::serial_print(" cr3=");
+
+    THREADS[2].state        = TS::Run;
+    THREADS[2].cr3          = US_CR3;
+    THREADS[2].ktop         = crate::perm::irq_stack_top();
+    THREADS[2].prio         = 5;
+    THREADS[2].id           = 2;
+    // Ustaw nazwę znak po znaku — bez slice
+    THREADS[2].name[0] = b'u'; THREADS[2].name[1] = b's'; THREADS[2].name[2] = b'e';
+    THREADS[2].name[3] = b'r'; THREADS[2].name[4] = b's'; THREADS[2].name[5] = b'p';
+    THREADS[2].name[6] = b'a'; THREADS[2].name[7] = b'c'; THREADS[2].name[8] = b'e';
+    THREADS[2].name[9] = 0;
+
+    CUR.store(2, Ordering::SeqCst);
+
+    crate::debug::serial_print("[US] slot=2 cr3=");
     { let mut b=[0u8;18]; crate::debug::serial_print(crate::debug::hex_str(US_CR3,&mut b)); }
     crate::debug::serial_print("\n");
     crate::debug::serial_print("[US] enter_userspace\n");
+
     crate::threading::enter_userspace(US_ENTRY, US_STACK, 0, US_CR3);
 }
+
 
 pub unsafe fn load_embedded() -> bool {
     crate::debug::serial_print("[EMB] brak embedded blob\n");

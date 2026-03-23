@@ -263,11 +263,16 @@ pub unsafe fn schedule() {
 
     // Jeśli następny wątek to userspace (krsp=0, nie ma kernel stosu)
     // wróć do niego przez enter_userspace zamiast thread_switch
-    if THREADS[next].krsp == 0 && THREADS[next].cr3 != K_P4 && THREADS[next].cr3 != 0 {
+    if THREADS[next].cr3 != 0 && THREADS[next].cr3 != K_P4 {
         let entry = crate::userspace_loader::US_ENTRY;
         let stack = crate::userspace_loader::US_STACK;
         let cr3   = THREADS[next].cr3;
-        serial_print("[SCHED] resuming userspace\n");
+        serial_print("[SCHED] -> userspace\n");
+        // Zwolnij lock przed enter_userspace (nie wrócimy)
+        SCHED_LOCK.locked.store(false, Ordering::Release);
+        // Zmień CR3 na userspace
+        if cr3 != 0 { asm!("mov cr3, {}", in(reg) cr3, options(nostack)); }
+        // Wróć do userspace przez iretq — nie przez thread_switch
         enter_userspace(entry, stack, 0, cr3);
     }
 

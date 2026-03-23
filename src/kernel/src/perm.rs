@@ -40,12 +40,9 @@ impl Tss {
 
 pub static mut TSS:      Tss                           = Tss::new();
 pub static mut DF_STACK: [u8; DOUBLE_FAULT_STACK_SIZE] = [0u8; DOUBLE_FAULT_STACK_SIZE];
-
 const IRQ_STACK_SIZE: usize = 0x4000;
 pub static mut IRQ_STACK: [u8; IRQ_STACK_SIZE] = [0u8; IRQ_STACK_SIZE];
-pub fn irq_stack_top() -> u64 {
-    unsafe { IRQ_STACK.as_ptr() as u64 + IRQ_STACK_SIZE as u64 }
-}
+pub fn irq_stack_top() -> u64 { unsafe { IRQ_STACK.as_ptr() as u64 + IRQ_STACK_SIZE as u64 } }
 
 pub unsafe fn tss_rsp0(v: VirtAddr) { TSS.rsp0 = v; }
 pub unsafe fn tss_use_irq_stack() { TSS.rsp0 = irq_stack_top(); }
@@ -255,13 +252,61 @@ pub unsafe extern "C" fn handle_pf(f: *mut TF) {
     let err  = (*f).rax;
     let rip  = (*f).rip;
     let addr: u64;
+    let cr3:  u64;
     asm!("mov {}, cr2", out(reg) addr, options(nomem, nostack));
+    asm!("mov {}, cr3", out(reg) cr3,  options(nomem, nostack));
     printc("\n[#PF] PAGE FAULT\n", col::YELLOW);
     print("  addr="); { let mut b=[0u8;18]; print(hex_str(addr, &mut b)); }
     print("  err=");  { let mut b=[0u8;18]; print(hex_str(err,  &mut b)); }
     print("  rip=");  { let mut b=[0u8;18]; print(hex_str(rip,  &mut b)); }
+    print("  cr3=");  { let mut b=[0u8;18]; print(hex_str(cr3,  &mut b)); }
     print(if err & 4 != 0 { " USR" } else { " KRN" });
     print(if err & 2 != 0 { " W\n" } else { " R\n" });
+
+    // Sprawdź page table dla faulting address
+    use crate::mm::pt_ptr;
+    let pml4i = ((addr >> 39) & 0x1FF) as usize;
+    let pdpti = ((addr >> 30) & 0x1FF) as usize;
+    let pdi   = ((addr >> 21) & 0x1FF) as usize;
+    let pti   = ((addr >> 12) & 0x1FF) as usize;
+    crate::debug::serial_print("[#PF] walk cr3=");
+    { let mut b=[0u8;18]; crate::debug::serial_print(crate::debug::hex_str(cr3,&mut b)); }
+    crate::debug::serial_print(" addr=");
+    { let mut b=[0u8;18]; crate::debug::serial_print(crate::debug::hex_str(addr,&mut b)); }
+    crate::debug::serial_print("\n");
+    let pml4e = (*pt_ptr(cr3)).e[pml4i];
+    crate::debug::serial_print("  PML4["); 
+    { let mut b=[0u8;24]; crate::debug::serial_print(crate::debug::num_str(pml4i,&mut b)); }
+    crate::debug::serial_print("]=");
+    { let mut b=[0u8;18]; crate::debug::serial_print(crate::debug::hex_str(pml4e,&mut b)); }
+    crate::debug::serial_print("\n");
+    if pml4e & 1 != 0 {
+        let pdpt = pml4e & 0x000F_FFFF_FFFF_F000;
+        let pdpte = (*pt_ptr(pdpt)).e[pdpti];
+        crate::debug::serial_print("  PDPT[");
+        { let mut b=[0u8;24]; crate::debug::serial_print(crate::debug::num_str(pdpti,&mut b)); }
+        crate::debug::serial_print("]=");
+        { let mut b=[0u8;18]; crate::debug::serial_print(crate::debug::hex_str(pdpte,&mut b)); }
+        crate::debug::serial_print("\n");
+        if pdpte & 1 != 0 {
+            let pd = pdpte & 0x000F_FFFF_FFFF_F000;
+            let pde = (*pt_ptr(pd)).e[pdi];
+            crate::debug::serial_print("  PD[");
+            { let mut b=[0u8;24]; crate::debug::serial_print(crate::debug::num_str(pdi,&mut b)); }
+            crate::debug::serial_print("]=");
+            { let mut b=[0u8;18]; crate::debug::serial_print(crate::debug::hex_str(pde,&mut b)); }
+            crate::debug::serial_print("\n");
+            if pde & 1 != 0 {
+                let pt = pde & 0x000F_FFFF_FFFF_F000;
+                let pte = (*pt_ptr(pt)).e[pti];
+                crate::debug::serial_print("  PT[");
+                { let mut b=[0u8;24]; crate::debug::serial_print(crate::debug::num_str(pti,&mut b)); }
+                crate::debug::serial_print("]=");
+                { let mut b=[0u8;18]; crate::debug::serial_print(crate::debug::hex_str(pte,&mut b)); }
+                crate::debug::serial_print("\n");
+            }
+        }
+    }
     crate::panic_no_dyn("Unhandled page fault");
 }
 
