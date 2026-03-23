@@ -9,6 +9,7 @@ use core::{arch::asm, panic::PanicInfo, sync::atomic::Ordering};
 pub mod sync;
 pub mod debug;
 pub mod mm;
+pub mod valloc;
 pub mod perm;
 pub mod input;
 pub mod threading;
@@ -66,35 +67,28 @@ pub extern "C" fn kernel_main(mb_magic: u64, mb_info: u64) -> ! {
         print(" ===========================\n  CosinusOS Microkernel v3.5\n ===========================\n\n");
         set_col(col::WHITE);
         serial_print("=== CosinusOS v3.5 boot ===\n");
-
         mm::mm_init(0x0100_0000, 0x0F00_0000);
         mm::vmm_init(0x1000);
         debug::log_ok("PMM + VMM", true);
-
         perm::init_gdt(); debug::log_ok("GDT", true);
         perm::init_pic(); debug::log_ok("PIC", true);
         perm::init_idt(); asm!("cli", options(nomem, nostack));
         debug::log_ok("IDT", true);
-
         threading::sched_init(); debug::log_ok("Scheduler", true);
         perm::init_pit(); asm!("cli", options(nomem, nostack));
         debug::log_ok("PIT 100Hz", true);
-
         input::init_ps2(); asm!("cli", options(nomem, nostack));
         debug::log_ok("PS/2", true);
-
         let disp_ok = display::display_init();
         debug::log_ok("Display", disp_ok);
-
         let usb_ok = usb::usb_init();
         debug::log_ok("USB", usb_ok);
         if usb_ok { spawn_k("usb\0", usb::usb_thread as *const () as u64, 0); }
-
         spawn_k("kterminal\0", kterminal::run as *const () as u64, 0);
         debug::log_ok("kterminal", true);
 
         print("\n"); printc("=== Userspace ===\n", col::YELLOW);
-        let loaded = 'load: {
+        let loaded: bool = 'load: {
             if mb_magic == userspace_loader::MB2_OK {
                 debug::log_ok("MB2 magic", true);
                 if let Some((s, e)) = userspace_loader::mb2_module(mb_info) {
@@ -120,9 +114,9 @@ pub extern "C" fn kernel_main(mb_magic: u64, mb_info: u64) -> ! {
         serial_print("[OK] boot complete\n");
 
         if loaded {
-            userspace_loader::run_userspace_direct();
+            userspace_loader::run_userspace_direct()
         } else {
-            threading::jump_to_scheduler();
+            threading::jump_to_scheduler()
         }
     }
 }
