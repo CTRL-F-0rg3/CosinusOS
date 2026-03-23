@@ -260,6 +260,17 @@ pub unsafe fn schedule() {
     serial_print(" next=");        serial_hex(next as u64);
     serial_print(" new_krsp=");    serial_hex(THREADS[next].krsp);
     serial_print("\n");
+
+    // Jeśli następny wątek to userspace (krsp=0, nie ma kernel stosu)
+    // wróć do niego przez enter_userspace zamiast thread_switch
+    if THREADS[next].krsp == 0 && THREADS[next].cr3 != K_P4 && THREADS[next].cr3 != 0 {
+        let entry = crate::userspace_loader::US_ENTRY;
+        let stack = crate::userspace_loader::US_STACK;
+        let cr3   = THREADS[next].cr3;
+        serial_print("[SCHED] resuming userspace\n");
+        enter_userspace(entry, stack, 0, cr3);
+    }
+
     thread_switch(&mut THREADS[cur].krsp as *mut u64, THREADS[next].krsp);
 }
 
