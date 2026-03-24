@@ -4,9 +4,7 @@
 #![feature(abi_x86_interrupt)]
 #![allow(unsafe_op_in_unsafe_fn)]
 
-extern crate alloc;
-
-use core::{arch::asm, panic::PanicInfo, sync::atomic::Ordering};
+use core::{arch::asm, panic::PanicInfo};
 
 pub mod sync;
 pub mod debug;
@@ -73,7 +71,6 @@ pub extern "C" fn kernel_main(mb_magic: u64, mb_info: u64) -> ! {
         mm::vmm_init(0x1000);
         debug::log_ok("PMM + VMM", true);
 
-        // Zmapuj i zainicjalizuj kernel heap (slab + buddy) zaraz po VMM
         {
             use allocator::{KHEAP_BASE, KHEAP_SIZE};
             let pages = KHEAP_SIZE / PAGE_SIZE;
@@ -125,7 +122,7 @@ pub extern "C" fn kernel_main(mb_magic: u64, mb_info: u64) -> ! {
             break 'load ok;
         };
 
-        { let mut b=[0u8;24]; print(num_str(mm_free_kb(),&mut b)); } print(" KB free\n");
+        { let mut b=[0u8;24]; print(num_str(mm_free_kb(),&mut b)); } print(" KB PMM free\n");
         { let mut b=[0u8;24]; print(num_str(allocator::free_kb(),&mut b)); } print(" KB heap free\n");
         set_col(col::attr(col::BLACK, col::LGREEN)); print(" [ COMPLETE ] \n");
         set_col(col::WHITE); print("\n");
