@@ -9,13 +9,11 @@ pub use slab::MAX_SLAB_SIZE;
 pub use buddy::{PAGE_SIZE as BUDDY_PAGE_SIZE, MAX_ORDER, BUDDY_HEAP_SIZE};
 
 pub unsafe fn init() {
-    let heap = &mut *(core::ptr::addr_of!(KERNEL_HEAP) as *mut kernel_heap::KernelHeap);
-    heap.init_default();
+    KERNEL_HEAP.init_default();
 }
 
 pub unsafe fn init_at(base: usize, size: usize) {
-    let heap = &mut *(core::ptr::addr_of!(KERNEL_HEAP) as *mut kernel_heap::KernelHeap);
-    heap.init(base, size);
+    KERNEL_HEAP.init(base, size);
 }
 
 pub fn free_kb()  -> usize { KERNEL_HEAP.free_kb() }
