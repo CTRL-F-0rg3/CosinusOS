@@ -4,6 +4,8 @@
 #![feature(abi_x86_interrupt)]
 #![allow(unsafe_op_in_unsafe_fn)]
 
+extern crate alloc;
+
 use core::{arch::asm, panic::PanicInfo, sync::atomic::Ordering};
 
 pub mod sync;
@@ -19,6 +21,7 @@ pub mod ipc;
 pub mod usb;
 pub mod display;
 pub mod kterminal;
+pub mod allocator;
 
 pub use mm::{PhysAddr, VirtAddr, PAGE_SIZE, PTE_W, PTE_U};
 pub use mm::{mm_alloc, mm_free_phys, mm_free_kb, mm_used_kb, mm_total_kb};
@@ -27,7 +30,6 @@ pub use debug::{col, print, printc, set_col, cls, serial_print, num_str, hex_str
 pub use threading::{spawn_k, spawn_user_on_cr3, thread_yield, TS, Thread, THREADS, CUR, NTHREADS};
 pub use perm::{kb_pop, tss_rsp0, TICK};
 
-// ── Panic ─────────────────────────────────────────────────────────────────────
 pub fn panic_no_dyn(msg: &str) -> ! {
     unsafe {
         asm!("cli", options(nomem, nostack));
@@ -57,7 +59,6 @@ fn panic(info: &PanicInfo) -> ! {
     loop { unsafe { asm!("hlt", options(nomem, nostack)); } }
 }
 
-// ── kernel_main ───────────────────────────────────────────────────────────────
 #[no_mangle]
 pub extern "C" fn kernel_main(mb_magic: u64, mb_info: u64) -> ! {
     unsafe {
@@ -67,9 +68,24 @@ pub extern "C" fn kernel_main(mb_magic: u64, mb_info: u64) -> ! {
         print(" ===========================\n  CosinusOS Microkernel v3.5\n ===========================\n\n");
         set_col(col::WHITE);
         serial_print("=== CosinusOS v3.5 boot ===\n");
+
         mm::mm_init(0x0100_0000, 0x0F00_0000);
         mm::vmm_init(0x1000);
         debug::log_ok("PMM + VMM", true);
+
+        // Zmapuj i zainicjalizuj kernel heap (slab + buddy) zaraz po VMM
+        {
+            use allocator::{KHEAP_BASE, KHEAP_SIZE};
+            let pages = KHEAP_SIZE / PAGE_SIZE;
+            for i in 0..pages {
+                let phys  = mm_alloc();
+                let vaddr = KHEAP_BASE as u64 + i as u64 * PAGE_SIZE as u64;
+                vmap(mm::K_P4, vaddr, phys, PTE_W);
+            }
+            allocator::init();
+        }
+        debug::log_ok("KernelHeap", true);
+
         perm::init_gdt(); debug::log_ok("GDT", true);
         perm::init_pic(); debug::log_ok("PIC", true);
         perm::init_idt(); asm!("cli", options(nomem, nostack));
@@ -79,6 +95,7 @@ pub extern "C" fn kernel_main(mb_magic: u64, mb_info: u64) -> ! {
         debug::log_ok("PIT 100Hz", true);
         input::init_ps2(); asm!("cli", options(nomem, nostack));
         debug::log_ok("PS/2", true);
+
         let disp_ok = display::display_init();
         debug::log_ok("Display", disp_ok);
         let usb_ok = usb::usb_init();
@@ -109,6 +126,7 @@ pub extern "C" fn kernel_main(mb_magic: u64, mb_info: u64) -> ! {
         };
 
         { let mut b=[0u8;24]; print(num_str(mm_free_kb(),&mut b)); } print(" KB free\n");
+        { let mut b=[0u8;24]; print(num_str(allocator::free_kb(),&mut b)); } print(" KB heap free\n");
         set_col(col::attr(col::BLACK, col::LGREEN)); print(" [ COMPLETE ] \n");
         set_col(col::WHITE); print("\n");
         serial_print("[OK] boot complete\n");
