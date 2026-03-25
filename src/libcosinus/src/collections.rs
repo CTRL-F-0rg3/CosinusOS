@@ -5,7 +5,7 @@
 // Celowo nie używamy extern crate alloc / std::vec::Vec — piszemy własne
 // żeby mieć pełną kontrolę nad ABI i zachowaniem w no_std.
 
-use core::alloc::Layout;
+use core::alloc::{GlobalAlloc, Layout};
 use core::ptr::{self, NonNull};
 use core::marker::PhantomData;
 use core::ops::{Deref, DerefMut, Index, IndexMut};
@@ -13,7 +13,7 @@ use core::slice;
 use crate::alloc_impl::HEAP;
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
-
+pub const SYS_PRINT: usize = 1;
 unsafe fn heap_alloc<T>(cap: usize) -> Option<NonNull<T>> {
     if cap == 0 { return Some(NonNull::dangling()); }
     let layout = Layout::array::<T>(cap).ok()?;
@@ -275,7 +275,28 @@ impl<T: core::fmt::Debug> core::fmt::Debug for CosBox<T> {
 }
 
 // ── CosOption<T> — Result-friendly Option wrapper ────────────────────────────
+pub fn syscall_print(s: &str) {
+    unsafe {
+        syscall_1(SYS_PRINT, s.as_ptr() as usize);
+    }
+}
 
+pub unsafe fn syscall_1(num: usize, arg: usize) {
+    core::arch::asm!(
+        "syscall",
+        in("rax") num,
+        in("rdi") arg,
+    );
+}
+
+pub struct Writer;
+
+impl core::fmt::Write for Writer {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        syscall_print(s);
+        Ok(())
+    }
+}
 pub trait IntoResult<T> {
     fn ok_or_nomem(self) -> Result<T, i64>;
 }

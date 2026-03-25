@@ -5,6 +5,19 @@ use crate::plugin::api::{DrawCtx, PluginFlags};
 use crate::tui::PanelPainter;
 use libcosinus::fmt::FmtBuf;
 
+// w src/plugins/hello.rs
+use crate::define_plugin; // jeśli macro jest #[macro_export] w libcosinus
+
+define_plugin! {
+    name: "hello",
+    version: (0, 1, 0),
+    flags: PluginFlags::HAS_PANEL | PluginFlags::HAS_CMDS | PluginFlags::AUTOSTART,
+    cmds: [],
+    init: |_, _| {},
+    author: "Królik",
+    description: "Example plugin",
+    plugin_desc_name: HELLO_PLUGIN_DESC, // <-- dodaj opcjonalne pole w makrze lub zmień w makrze ręcznie
+}
 // Stan pluginu — statyczny, bo plugin jest singletonem w procesie
 static mut TICK_COUNT: u64  = 0;
 static mut LAST_MSG:   [u8; 32] = [0; 32];

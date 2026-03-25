@@ -4,8 +4,8 @@ version = "0.1.0"
 edition = "2021"
 
 [lib]
-name       = "cosinus"
-crate-type = ["staticlib"]
+name       = "libcosinus"
+crate-type = ["rlib","staticlib"]
 
 [profile.release]
 opt-level = "s"

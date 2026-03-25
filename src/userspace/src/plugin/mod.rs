@@ -42,6 +42,17 @@ impl PluginSlot {
 }
 
 // ── PluginManager ─────────────────────────────────────────────────────────────
+pub fn register_plugins(registry: &mut Registry) {
+    for desc in plugins::all_plugins().iter() {
+        // tu zamieniamy starą linię debug:
+        // libcosinus::debug(&plugin_log_name("loaded", desc.meta.name_str()));
+
+        let s: &str = plugin_log_name("loaded", desc.meta.name_str()).as_str();
+        libcosinus::debug(s);
+
+        registry.register(desc);
+    }
+}
 
 pub struct PluginManager {
     slots:      [PluginSlot; MAX_PLUGINS],
