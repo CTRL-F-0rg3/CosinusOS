@@ -3,12 +3,19 @@ name = "userspace"
 version = "0.1.0"
 edition = "2021"
 
+[[bin]]
+name = "userspace"
+path = "src/main.rs"
+ 
 [dependencies]
-
+libcosinus = { path = "../libcosinus" }
+ 
 [profile.release]
-panic = "abort"
-lto = true
-opt-level = 3
-
+opt-level = "z"
+lto       = true
+panic     = "abort"
+strip     = true
+ 
 [profile.dev]
 panic = "abort"
+ 
