@@ -130,7 +130,7 @@ unsafe impl GlobalAlloc for UserHeap {
 
         // Duża alokacja — zwróć przez munmap
         let pages = (size + PAGE_SIZE - 1) / PAGE_SIZE;
-        crate::munmap(ptr, pages * PAGE_SIZE);
+        let _ = crate::munmap(ptr, pages * PAGE_SIZE);
     }
 
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {

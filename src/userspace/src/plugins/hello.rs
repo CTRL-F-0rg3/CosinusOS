@@ -14,9 +14,7 @@ define_plugin! {
     flags: PluginFlags::HAS_PANEL | PluginFlags::HAS_CMDS | PluginFlags::AUTOSTART,
     cmds: [],
     init: |_, _| {},
-    author: "Królik",
-    description: "Example plugin",
-    plugin_desc_name: HELLO_PLUGIN_DESC, // <-- dodaj opcjonalne pole w makrze lub zmień w makrze ręcznie
+    
 }
 // Stan pluginu — statyczny, bo plugin jest singletonem w procesie
 static mut TICK_COUNT: u64  = 0;
