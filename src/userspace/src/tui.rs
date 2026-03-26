@@ -11,7 +11,7 @@
 //   przez debug_print. Skoro kernel ma VGA text buffer (0xB8000), używamy
 //   sys_write który kieruje do putc → VGA.
 
-use libcosinus::{print, eprint};
+use libcosinus::print;
 use libcosinus::fmt::FmtBuf;
 use crate::plugin::api::DrawCtx;
 
@@ -230,6 +230,7 @@ impl Tui {
     }
 
     pub fn input_clear(&mut self) { self.input_len = 0; }
+    pub fn input_len(&self) -> usize { self.input_len }
 
     pub fn input_str(&self) -> &str {
         core::str::from_utf8(&self.input_buf[..self.input_len]).unwrap_or("")
