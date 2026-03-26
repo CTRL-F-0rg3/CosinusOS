@@ -4,10 +4,10 @@
 use crate::mm::{PhysAddr, VirtAddr, PAGE_SIZE, PTE_W, PTE_U, mm_alloc, vmap, new_user_p4};
 use crate::debug::{col, print, printc, num_str, hex_str};
 
-pub static mut US_ENTRY: VirtAddr = 0;
-pub static mut US_STACK: VirtAddr = 0;
-pub static mut US_CR3: crate::mm::PhysAddr = 0;
-pub static mut US_READY: bool = false;
+pub static mut US_ENTRY: VirtAddr  = 0;
+pub static mut US_STACK: VirtAddr  = 0;
+pub static mut US_CR3:   PhysAddr  = 0;
+pub static mut US_READY: bool      = false;
 
 // ── Multiboot2 structs ────────────────────────────────────────────────────────
 #[repr(C, packed)] struct Mb2Hdr { total: u32, _res: u32 }
@@ -32,7 +32,7 @@ pub unsafe fn mb2_module(info: u64) -> Option<(u64, u64)> {
     None
 }
 
-// ── Główny loader ─────────────────────────────────────────────────────────────
+// ── Entry point ───────────────────────────────────────────────────────────────
 pub unsafe fn load_userspace(mod_start: u64, mod_end: u64) -> bool {
     if mod_end <= mod_start { return false; }
     let mod_sz = (mod_end - mod_start) as usize;
@@ -46,10 +46,10 @@ pub unsafe fn load_userspace(mod_start: u64, mod_end: u64) -> bool {
     }
 }
 
-// ── Flat binary ──────────────────────────────────────────────────────────────
-unsafe fn load_flat(src: *const u8, size: usize, mod_start: u64) -> bool {
+// ── Flat binary ───────────────────────────────────────────────────────────────
+unsafe fn load_flat(src: *const u8, size: usize, _mod_start: u64) -> bool {
     printc("[US] Raw binary\n", col::LCYAN);
-    let cr3 = new_user_p4();
+    let cr3 = make_clean_user_p4();
     const BIN_BASE: u64 = 0x0040_0000;
     let pages = (size + PAGE_SIZE - 1) / PAGE_SIZE;
     for i in 0..pages {
@@ -60,11 +60,10 @@ unsafe fn load_flat(src: *const u8, size: usize, mod_start: u64) -> bool {
         core::ptr::copy_nonoverlapping(src.add(i * PAGE_SIZE), dst, n);
         if n < PAGE_SIZE { core::ptr::write_bytes(dst.add(n), 0, PAGE_SIZE - n); }
     }
-    US_ENTRY = BIN_BASE;
-    printc("[US] Flat binary @ ", col::LCYAN);
+    print("[US] Flat binary @ ");
     { let mut b = [0u8; 18]; print(hex_str(BIN_BASE, &mut b)); }
     print("\n");
-    spawn_and_report("userspace", BIN_BASE, 0, cr3)
+    spawn_and_report(BIN_BASE, cr3)
 }
 
 // ── ELF64 loader ─────────────────────────────────────────────────────────────
@@ -75,7 +74,7 @@ unsafe fn load_elf64(elf: *const u8, _sz: usize) -> bool {
     let e_phentsize = *(elf.add(0x36) as *const u16) as usize;
     let e_phnum     = *(elf.add(0x38) as *const u16) as usize;
 
-    // ET_DYN (PIE) → ładuj od 0x400000; ET_EXEC → zachowaj oryginalne adresy
+    // ET_DYN (PIE) loads at 0x400000; ET_EXEC keeps original virtual addresses
     let load_base: u64 = if e_type == 3 { 0x0040_0000 } else { 0 };
     let e_entry = load_base + e_entry_raw;
 
@@ -87,7 +86,8 @@ unsafe fn load_elf64(elf: *const u8, _sz: usize) -> bool {
     { let mut nb = [0u8; 24]; print(num_str(e_phnum, &mut nb)); }
     print("\n");
 
-    let cr3 = new_user_p4();
+    // Clean page table — no inherited kernel huge pages in lower half
+    let cr3 = make_clean_user_p4();
 
     for i in 0..e_phnum {
         let ph      = elf.add(e_phoff as usize + i * e_phentsize);
@@ -101,7 +101,7 @@ unsafe fn load_elf64(elf: *const u8, _sz: usize) -> bool {
         let p_memsz  = *(ph.add(0x28) as *const u64);
         if p_memsz == 0 { continue; }
 
-        let p_memsz = core::cmp::min(p_memsz, 2 * 1024 * 1024); // max 2MB na segment
+        let p_memsz = core::cmp::min(p_memsz, 2 * 1024 * 1024); // cap at 2MB per segment
 
         let mut perm = PTE_U;
         if p_flags & 0x2 != 0 { perm |= PTE_W; }
@@ -139,54 +139,66 @@ unsafe fn load_elf64(elf: *const u8, _sz: usize) -> bool {
         print("\n");
     }
 
-    US_ENTRY = e_entry;
-    spawn_and_report("userspace", e_entry, 0, cr3)
+    spawn_and_report(e_entry, cr3)
 }
 
-// ── Helper: spawn + log ───────────────────────────────────────────────────────
-unsafe fn spawn_and_report(_name: &str, entry: u64, _arg: u64, cr3: PhysAddr) -> bool {
-    use crate::mm::{PAGE_SIZE, mm_alloc, vmap, PTE_W, PTE_U};
-    const STACK_BASE: u64 = 0x07C0_0000;  // Przesuń niżej
-    const STACK_PAGES: usize = 64;           // 256KB stosu
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+// Create a user page table that inherits kernel mappings (upper half only).
+// Clears the lower 256 PML4 entries so no kernel huge pages leak into userspace.
+unsafe fn make_clean_user_p4() -> PhysAddr {
+    let cr3 = new_user_p4();
+    let p4  = &mut *crate::mm::pt_ptr(cr3);
+    for i in 0..256 { p4.e[i] = 0; }
+    cr3
+}
+
+unsafe fn spawn_and_report(entry: u64, cr3: PhysAddr) -> bool {
+    const STACK_BASE:  u64   = 0x07C0_0000;
+    const STACK_PAGES: usize = 64; // 256 KB
+
     for p in 0..STACK_PAGES {
         let phys = mm_alloc();
         if phys == 0 { return false; }
         core::ptr::write_bytes(phys as *mut u8, 0, PAGE_SIZE);
         vmap(cr3, STACK_BASE + p as u64 * PAGE_SIZE as u64, phys, PTE_W | PTE_U);
     }
+
     let stack_top = (STACK_BASE + STACK_PAGES as u64 * PAGE_SIZE as u64) & !0xF;
-    US_ENTRY = entry; US_STACK = stack_top; US_CR3 = cr3; US_READY = true;
-    printc("[US] Userspace gotowy: entry=", col::LGREEN);
-    { let mut b=[0u8;18]; print(crate::debug::hex_str(entry,&mut b)); }
+
+    US_ENTRY = entry;
+    US_STACK = stack_top;
+    US_CR3   = cr3;
+    US_READY = true;
+
+    printc("[US] Userspace ready: entry=", col::LGREEN);
+    { let mut b = [0u8; 18]; print(crate::debug::hex_str(entry, &mut b)); }
     print(" stack=");
-    { let mut b=[0u8;18]; print(crate::debug::hex_str(stack_top,&mut b)); }
+    { let mut b = [0u8; 18]; print(crate::debug::hex_str(stack_top, &mut b)); }
     print("\n");
     true
 }
 
 pub unsafe fn run_userspace_direct() -> ! {
-    if !US_READY { crate::panic_no_dyn("brak userspace"); }
+    if !US_READY { crate::panic_no_dyn("no userspace loaded"); }
 
     crate::debug::serial_print("[US] run_userspace_direct\n");
 
-    // Ustaw IRQ stack jako TSS.rsp0
     crate::perm::tss_use_irq_stack();
 
     crate::debug::serial_print("[US] irq_stack_top=");
-    { let mut b=[0u8;18]; crate::debug::serial_print(crate::debug::hex_str(crate::perm::irq_stack_top(),&mut b)); }
+    { let mut b = [0u8; 18]; crate::debug::serial_print(
+        crate::debug::hex_str(crate::perm::irq_stack_top(), &mut b)); }
     crate::debug::serial_print("\n");
 
-    // Zarejestruj userspace jako wątek #2
-    // Używamy stałego slotu 2 — bez pętli, bez copy_from_slice
     use crate::threading::{THREADS, CUR, TS};
     use core::sync::atomic::Ordering;
 
-    THREADS[2].state        = TS::Run;
-    THREADS[2].cr3          = US_CR3;
-    THREADS[2].ktop         = crate::perm::irq_stack_top();
-    THREADS[2].prio         = 5;
-    THREADS[2].id           = 2;
-    // Ustaw nazwę znak po znaku — bez slice
+    THREADS[2].state   = TS::Run;
+    THREADS[2].cr3     = US_CR3;
+    THREADS[2].ktop    = crate::perm::irq_stack_top();
+    THREADS[2].prio    = 5;
+    THREADS[2].id      = 2;
     THREADS[2].name[0] = b'u'; THREADS[2].name[1] = b's'; THREADS[2].name[2] = b'e';
     THREADS[2].name[3] = b'r'; THREADS[2].name[4] = b's'; THREADS[2].name[5] = b'p';
     THREADS[2].name[6] = b'a'; THREADS[2].name[7] = b'c'; THREADS[2].name[8] = b'e';
@@ -195,15 +207,14 @@ pub unsafe fn run_userspace_direct() -> ! {
     CUR.store(2, Ordering::SeqCst);
 
     crate::debug::serial_print("[US] slot=2 cr3=");
-    { let mut b=[0u8;18]; crate::debug::serial_print(crate::debug::hex_str(US_CR3,&mut b)); }
-    crate::debug::serial_print("\n");
-    crate::debug::serial_print("[US] enter_userspace\n");
+    { let mut b = [0u8; 18]; crate::debug::serial_print(
+        crate::debug::hex_str(US_CR3, &mut b)); }
+    crate::debug::serial_print("\n[US] enter_userspace\n");
 
     crate::threading::enter_userspace(US_ENTRY, US_STACK, 0, US_CR3);
 }
 
-
 pub unsafe fn load_embedded() -> bool {
-    crate::debug::serial_print("[EMB] brak embedded blob\n");
+    crate::debug::serial_print("[EMB] no embedded blob\n");
     false
 }
