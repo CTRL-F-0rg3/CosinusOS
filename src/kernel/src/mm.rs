@@ -1,6 +1,5 @@
 // CosinusOS — mm.rs
 
-
 use core::arch::asm;
 use crate::sync::Spinlock;
 use crate::debug::{serial_print, putc_raw};
@@ -11,7 +10,7 @@ pub type VirtAddr = u64;
 pub const PAGE_SIZE: usize = 0x1000;
 const MAX_FRAMES:    usize = 0x10000;
 
-// ── PTE flagi (publiczne — używane przez threading i loader) ─────────────────
+// ── PTE flags ────────────────────────────────────────────────────────────────
 pub const PTE_P:    u64 = 1 << 0;
 pub const PTE_W:    u64 = 1 << 1;
 pub const PTE_U:    u64 = 1 << 2;
@@ -121,28 +120,39 @@ pub unsafe fn zpg_locked() -> PhysAddr {
     p
 }
 
+// Get-or-create a page table entry at `idx` in table at `tab`.
+// `flags` are ORed into the entry — existing entries get missing flags added.
+// Huge pages (PS bit) are split into 4K pages on demand.
 unsafe fn goc(tab: PhysAddr, idx: usize, flags: u64) -> PhysAddr {
     let t = &mut *pt_ptr(tab);
-    if !pte_present(t.e[idx]) {
-        let c = zpg();
-        t.e[idx] = pte_make(c, flags);
-    } else {
-        t.e[idx] |= flags & (PTE_W | PTE_U);
 
-        if t.e[idx] & (1 << 7) != 0 {
-            let huge_phys = t.e[idx] & 0x000F_FFFF_FFE0_0000;
-            let c = zpg();
-            let p1 = &mut *pt_ptr(c);
-            for j in 0..512usize {
-                let phys = huge_phys + j as u64 * PAGE_SIZE as u64;
-                p1.e[j] = pte_make(phys, PTE_W);
-            }
-            t.e[idx] = pte_make(c, flags);
-            let cr3: u64;
-            asm!("mov {}, cr3", out(reg) cr3, options(nomem, nostack));
-            asm!("mov cr3, {}", in(reg) cr3, options(nostack));
-        }
+    if !pte_present(t.e[idx]) {
+        // Entry doesn't exist — allocate a fresh page table
+        let child = zpg();
+        t.e[idx] = pte_make(child, flags);
+        return child;
     }
+
+    // Entry exists — ensure required flags are set (e.g. PTE_U for user walk)
+    t.e[idx] |= flags & (PTE_W | PTE_U);
+
+    // Split huge page (PS=1) into 4K entries so vmap can address individual pages
+    if t.e[idx] & (1 << 7) != 0 {
+        let huge_phys = t.e[idx] & 0x000F_FFFF_FFE0_0000;
+        let child = zpg();
+        let p1 = &mut *pt_ptr(child);
+        for j in 0..512usize {
+            let phys = huge_phys + j as u64 * PAGE_SIZE as u64;
+            // Keep W flag from the huge page; U will be added by caller if needed
+            p1.e[j] = pte_make(phys, PTE_W);
+        }
+        t.e[idx] = pte_make(child, flags);
+        // Flush TLB after replacing the huge page entry
+        let cr3: u64;
+        asm!("mov {}, cr3", out(reg) cr3, options(nomem, nostack));
+        asm!("mov cr3, {}", in(reg) cr3, options(nostack));
+    }
+
     pte_addr(t.e[idx])
 }
 
@@ -159,12 +169,20 @@ pub unsafe fn vmm_init(boot_cr3: PhysAddr) {
     K_P4 = new_p4;
 }
 
+// Map a single 4K page: virt `v` → phys `p` with flags `f` in page table `p4`.
+// Intermediate tables (P3/P2/P1) always get PTE_W|PTE_U so user mappings can
+// be reached regardless of which flags the leaf entry carries.
 pub unsafe fn vmap(p4: PhysAddr, v: VirtAddr, p: PhysAddr, f: u64) -> i32 {
     if v & 0xFFF != 0 || p & 0xFFF != 0 || p4 == 0 { return -1; }
+
+    // Determine intermediate flags: user mappings need PTE_U all the way down.
+    // Kernel mappings (no PTE_U in f) only need PTE_W on intermediate levels.
+    let inter_flags = if f & PTE_U != 0 { PTE_W | PTE_U } else { PTE_W };
+
     MM_LOCK.lock();
-    let p3 = goc(p4, ((v >> 39) & 0x1FF) as usize, PTE_W | PTE_U);
-    let p2 = goc(p3, ((v >> 30) & 0x1FF) as usize, PTE_W | PTE_U);
-    let p1 = goc(p2, ((v >> 21) & 0x1FF) as usize, PTE_W | PTE_U);
+    let p3 = goc(p4, ((v >> 39) & 0x1FF) as usize, inter_flags);
+    let p2 = goc(p3, ((v >> 30) & 0x1FF) as usize, inter_flags);
+    let p1 = goc(p2, ((v >> 21) & 0x1FF) as usize, inter_flags);
     (*pt_ptr(p1)).e[((v >> 12) & 0x1FF) as usize] = pte_make(p, f);
     asm!("invlpg [{}]", in(reg) v, options(nostack, preserves_flags));
     MM_LOCK.unlock();
@@ -232,14 +250,17 @@ pub unsafe fn valid_buf(p4: PhysAddr, ptr: VirtAddr, len: usize) -> bool {
     true
 }
 
+// Allocate a new P4 that shares kernel mappings (upper half, entries 256–511).
+// Lower half (entries 0–255) is zeroed — userspace fills it via vmap.
 pub unsafe fn new_user_p4() -> PhysAddr {
     let n   = zpg_locked();
     let src = &*pt_ptr(K_P4);
     let dst = &mut *pt_ptr(n);
-    for i in 0..512 { dst.e[i] = src.e[i]; }
+    // Share only upper half (kernel virtual space)
+    for i in 0..256   { dst.e[i] = 0;         }
+    for i in 256..512 { dst.e[i] = src.e[i];  }
     n
 }
-
 
 unsafe fn pnum_serial(mut v: usize) {
     if v == 0 { serial_print("0"); return; }
@@ -255,6 +276,5 @@ unsafe fn pnum_serial(mut v: usize) {
     }
 }
 
-
-pub const KERNEL_STACK_SIZE: usize = 0x8000; // 32KB
-pub const USER_STACK_SIZE:   usize = 0x4000; // 16KB
+pub const KERNEL_STACK_SIZE: usize = 0x8000; // 32 KB
+pub const USER_STACK_SIZE:   usize = 0x4000; // 16 KB

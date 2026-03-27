@@ -40,29 +40,38 @@ pub unsafe fn load_userspace(mod_start: u64, mod_end: u64) -> bool {
     let magic  = *(elf as *const u32);
 
     if magic != 0x464C457F {
-        load_flat(elf, mod_sz, mod_start)
+        load_flat(elf, mod_sz)
     } else {
         load_elf64(elf, mod_sz)
     }
 }
 
 // ── Flat binary ───────────────────────────────────────────────────────────────
-unsafe fn load_flat(src: *const u8, size: usize, _mod_start: u64) -> bool {
+unsafe fn load_flat(src: *const u8, size: usize) -> bool {
     printc("[US] Raw binary\n", col::LCYAN);
-    let cr3 = make_clean_user_p4();
+
+    // new_user_p4() already gives a clean lower half — no extra zeroing needed
+    let cr3 = new_user_p4();
+
     const BIN_BASE: u64 = 0x0040_0000;
     let pages = (size + PAGE_SIZE - 1) / PAGE_SIZE;
+
     for i in 0..pages {
         let phys = mm_alloc();
-        vmap(cr3, BIN_BASE + i as u64 * PAGE_SIZE as u64, phys, PTE_W | PTE_U);
+        if phys == 0 { return false; }
+        // RX for code: no PTE_W on leaf, but readable+user
+        // If your binary needs writable data mixed with code use PTE_W|PTE_U
+        vmap(cr3, BIN_BASE + i as u64 * PAGE_SIZE as u64, phys, PTE_U);
         let dst = phys as *mut u8;
         let n   = core::cmp::min(PAGE_SIZE, size - i * PAGE_SIZE);
         core::ptr::copy_nonoverlapping(src.add(i * PAGE_SIZE), dst, n);
         if n < PAGE_SIZE { core::ptr::write_bytes(dst.add(n), 0, PAGE_SIZE - n); }
     }
+
     print("[US] Flat binary @ ");
     { let mut b = [0u8; 18]; print(hex_str(BIN_BASE, &mut b)); }
     print("\n");
+
     spawn_and_report(BIN_BASE, cr3)
 }
 
@@ -86,8 +95,7 @@ unsafe fn load_elf64(elf: *const u8, _sz: usize) -> bool {
     { let mut nb = [0u8; 24]; print(num_str(e_phnum, &mut nb)); }
     print("\n");
 
-    // Clean page table — no inherited kernel huge pages in lower half
-    let cr3 = make_clean_user_p4();
+    let cr3 = new_user_p4();
 
     for i in 0..e_phnum {
         let ph      = elf.add(e_phoff as usize + i * e_phentsize);
@@ -101,10 +109,12 @@ unsafe fn load_elf64(elf: *const u8, _sz: usize) -> bool {
         let p_memsz  = *(ph.add(0x28) as *const u64);
         if p_memsz == 0 { continue; }
 
-        let p_memsz = core::cmp::min(p_memsz, 2 * 1024 * 1024); // cap at 2MB per segment
+        let p_memsz = core::cmp::min(p_memsz, 2 * 1024 * 1024);
 
+        // Respect ELF segment flags: PF_W=0x2, PF_X=0x1, PF_R=0x4
         let mut perm = PTE_U;
         if p_flags & 0x2 != 0 { perm |= PTE_W; }
+        // Note: x86-64 NX bit is not set here; add PTE_NX (bit 63) for W^X if needed
 
         let seg_start = (load_base + p_vaddr) & !(PAGE_SIZE as u64 - 1);
         let seg_end   = (load_base + p_vaddr + p_memsz + PAGE_SIZE as u64 - 1)
@@ -113,6 +123,7 @@ unsafe fn load_elf64(elf: *const u8, _sz: usize) -> bool {
         let mut vaddr = seg_start;
         while vaddr < seg_end {
             let phys = mm_alloc();
+            if phys == 0 { return false; }
             vmap(cr3, vaddr, phys, perm);
             let dst = phys as *mut u8;
             core::ptr::write_bytes(dst, 0, PAGE_SIZE);
@@ -142,17 +153,7 @@ unsafe fn load_elf64(elf: *const u8, _sz: usize) -> bool {
     spawn_and_report(e_entry, cr3)
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-// Create a user page table that inherits kernel mappings (upper half only).
-// Clears the lower 256 PML4 entries so no kernel huge pages leak into userspace.
-unsafe fn make_clean_user_p4() -> PhysAddr {
-    let cr3 = new_user_p4();
-    let p4  = &mut *crate::mm::pt_ptr(cr3);
-    for i in 0..256 { p4.e[i] = 0; }
-    cr3
-}
-
+// ── Stack allocation + thread slot setup ─────────────────────────────────────
 unsafe fn spawn_and_report(entry: u64, cr3: PhysAddr) -> bool {
     const STACK_BASE:  u64   = 0x07C0_0000;
     const STACK_PAGES: usize = 64; // 256 KB
@@ -164,6 +165,7 @@ unsafe fn spawn_and_report(entry: u64, cr3: PhysAddr) -> bool {
         vmap(cr3, STACK_BASE + p as u64 * PAGE_SIZE as u64, phys, PTE_W | PTE_U);
     }
 
+    // RSP must be 16-byte aligned; point to top of last mapped page
     let stack_top = (STACK_BASE + STACK_PAGES as u64 * PAGE_SIZE as u64) & !0xF;
 
     US_ENTRY = entry;
