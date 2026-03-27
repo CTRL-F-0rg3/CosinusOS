@@ -1,6 +1,5 @@
 // CosinusOS — kterminal.rs
-// Kernel debug terminal: PS/2 klawiatura + COM1 serial
-// Uruchamiany jako wątek kernelowy spawn_k("kterminal")
+
 
 use core::sync::atomic::Ordering;
 use core::arch::asm;
@@ -185,7 +184,6 @@ pub unsafe extern "C" fn run(_: u64) -> ! {
     }
 }
 
-// Lokalne makra (nie kolidują z makrami w lib.rs)
 macro_rules! pnum {
     ($v:expr) => {{ let mut b = [0u8;24]; print(num_str($v as usize, &mut b)); }};
 }

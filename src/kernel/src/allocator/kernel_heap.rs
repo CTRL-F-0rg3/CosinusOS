@@ -111,8 +111,6 @@ unsafe fn do_dealloc(inner: &mut HeapInner, ptr: *mut u8, layout: Layout) {
     }
 }
 
-// Callbacki slab→buddy. Wywoływane wewnątrz alloc kiedy lock już trzymany —
-// używamy buddy bezpośrednio żeby uniknąć re-lock.
 unsafe fn slab_page_alloc() -> *mut u8 {
     let inner = &mut *KERNEL_HEAP.inner.get();
     inner.buddy.alloc(super::buddy::PAGE_SIZE, super::buddy::PAGE_SIZE)

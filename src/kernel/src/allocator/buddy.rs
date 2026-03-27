@@ -1,6 +1,5 @@
 // CosinusOS — allocator/buddy.rs
-// Buddy allocator: bloki 4KB–2MB (order 0..9), intrusywna free-lista, bitmap coalesce.
-// Nie thread-safe — spinlock zapewnia KernelHeap.
+
 
 use core::ptr;
 
@@ -36,7 +35,7 @@ pub struct BuddyAllocator {
     pub free_bytes: usize,
 }
 
-// SAFETY: dostęp wyłącznie przez KernelHeap za spinlockiem
+
 unsafe impl Sync for BuddyAllocator {}
 unsafe impl Send for BuddyAllocator {}
 

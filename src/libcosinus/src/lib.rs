@@ -223,7 +223,7 @@ pub fn spawn_fn(entry: unsafe extern "C" fn(u64) -> !, name: &[u8; 16], arg: u64
     spawn(&SpawnArgs { entry: entry as u64, arg, stack_sz: 0, flags: spawn_flags::USER, name: *name })
 }
 
-// ── Pamięć ────────────────────────────────────────────────────────────────────
+// ── memory ────────────────────────────────────────────────────────────────────
 pub fn mmap(length: usize, prot: u32) -> *mut u8 {
     let args = MmapArgs {
         hint: 0, length: length as u64,
@@ -256,7 +256,7 @@ pub fn ipc_poll() -> usize {
     unsafe { syscall1(nr::IPC_POLL, 0).max(0) as usize }
 }
 
-// ── Czas ─────────────────────────────────────────────────────────────────────
+// ── time ─────────────────────────────────────────────────────────────────────
 pub fn ticks() -> u64 { unsafe { syscall0(nr::TIME) as u64 } }
 pub fn uptime_secs() -> u64 { ticks() / 100 }
 pub fn time_info(out: &mut TimeInfo) -> CosResult<()> {
@@ -285,7 +285,7 @@ pub fn read_line(buf: &mut [u8]) -> usize {
     total
 }
 
-// ── Filesystem (stub) ─────────────────────────────────────────────────────────
+// ── Filesystem  ─────────────────────────────────────────────────────────
 pub fn open(path: &str, flags: u32) -> CosResult<i64> {
     unsafe { syscall3(nr::OPEN, path.as_ptr() as u64, path.len() as u64, flags as u64).cos_ok() }
 }
@@ -303,7 +303,7 @@ pub fn chdir(path: &str) -> CosResult<()> {
     unsafe { syscall2(nr::CHDIR, path.as_ptr() as u64, path.len() as u64).cos_ok().map(|_| ()) }
 }
 
-// ── Sygnały ───────────────────────────────────────────────────────────────────
+// ── Sygnals ───────────────────────────────────────────────────────────────────
 pub fn signal(signum: u32, handler: u64) -> CosResult<()> {
     unsafe { syscall2(nr::SIGNAL, signum as u64, handler).cos_ok().map(|_| ()) }
 }

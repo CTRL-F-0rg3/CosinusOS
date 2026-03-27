@@ -11,13 +11,11 @@ eu_stack_top:               ; szczyt stosu
 
 section .text
 
-; extern "C" fn enter_userspace(entry: u64, stack: u64, arg: u64, cr3: u64) -> !
-; rdi=entry, rsi=stack, rdx=arg, rcx=cr3
+
 enter_userspace:
     cli
 
-    ; Przełącz na własny stos — NIE używamy stosu wywołującego
-    ; żeby nie niszczyć stosu kterminal ani idle
+
     lea rsp, [rel eu_stack_top]
 
     ; Załaduj CR3 userspace

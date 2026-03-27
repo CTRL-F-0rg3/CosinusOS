@@ -73,11 +73,10 @@ pub unsafe fn kbd_irq() {
         0x2A | 0x36 => { KBD_SHIFT = true;  return; } // LShift/RShift make
         0xAA | 0xB6 => { KBD_SHIFT = false; return; } // LShift/RShift break
         0x1D        => { KBD_CTRL  = true;  return; } // LCtrl make
-        0x9D        => { KBD_CTRL  = false; return; } // LCtrl break
+        0x9D        => { KBD_CTRL  = false; return; } 
         _ => {}
     }
 
-    // Break codes bit7=1 — ignoruj
     if sc & 0x80 != 0 { return; }
 
     let idx = sc as usize;
@@ -92,10 +91,6 @@ pub unsafe fn kbd_irq() {
     let c = if KBD_SHIFT { SC1_SHFT[idx] } else { SC1_NORM[idx] };
     if c != 0 { kb_push(c as char); }
 }
-
-// ════════════════════════════════════════════════════════════════════════════
-// § 8042 helpers
-// ════════════════════════════════════════════════════════════════════════════
 
 unsafe fn ps2_flush() {
     for _ in 0..16 {
@@ -144,9 +139,6 @@ unsafe fn kbd_cmd(cmd: u8, n: usize) -> bool {
     got_ack
 }
 
-// ════════════════════════════════════════════════════════════════════════════
-// § Init — Set1 z translation włączonym
-// ════════════════════════════════════════════════════════════════════════════
 
 pub unsafe fn init_ps2() {
     serial_print("[PS2] === init ===\n");
@@ -155,30 +147,26 @@ pub unsafe fn init_ps2() {
     serial_print("[PS2] status="); serial_hex(st as u64); serial_print("\n");
     if st == 0xFF { serial_print("[PS2] brak kontrolera\n"); return; }
 
-    // Maskuj IRQ1 podczas konfiguracji
     let pic_mask = inb(0x21);
     outb(0x21, pic_mask | 0x02);
 
-    // Disable obu portów
     ps2_wait_ibuf(); outb(0x64, 0xAD);
     ps2_wait_ibuf(); outb(0x64, 0xA7);
     ps2_flush();
 
-    // Odczytaj CFG
     ps2_wait_ibuf(); outb(0x64, 0x20);
     let cfg_orig = if ps2_wait_obuf() { inb(0x60) } else { 0 };
     serial_print("[PS2] cfg_orig="); serial_hex(cfg_orig as u64); serial_print("\n");
 
-    // IRQ1=1, translation=1 (Set1 przez hardware translation), IRQ12=0
     let cfg_new = (cfg_orig | 0x41) & !0x02;
     serial_print("[PS2] cfg_new="); serial_hex(cfg_new as u64); serial_print("\n");
     ps2_wait_ibuf(); outb(0x64, 0x60);
     ps2_wait_ibuf(); outb(0x60, cfg_new);
 
-    // Enable port1
+    
     ps2_wait_ibuf(); outb(0x64, 0xAE);
 
-    // Reset klawiatury
+   
     ps2_wait_ibuf(); outb(0x60, 0xFF);
     let mut got_bat = false;
     for i in 0..4usize {
@@ -191,12 +179,12 @@ pub unsafe fn init_ps2() {
     serial_print(if got_bat { "[PS2] BAT OK\n" } else { "[PS2] BAT missing\n" });
     ps2_flush();
 
-    // Enable Scanning
+
     let ack = kbd_cmd(0xF4, 3);
     serial_print(if ack { "[PS2] scanning ON\n" } else { "[PS2] scanning FAIL\n" });
     ps2_flush();
 
-    // Włącz IRQ1
+
     outb(0x21, inb(0x21) & !0x02);
     serial_print("[PS2] === init done ===\n");
 }

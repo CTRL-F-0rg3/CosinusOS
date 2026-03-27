@@ -1,6 +1,5 @@
 // CosinusOS — ipc.rs
-// Message-passing IPC między wątkami userspace
-// Każdy wątek ma kolejkę FIFO wiadomości (bez alokacji heap — ring buffer)
+
 
 use crate::sync::Spinlock;
 use crate::syscall_api::{IpcMsg, err};
@@ -9,9 +8,6 @@ use crate::threading::{THREADS, CUR, MAX_THREADS, TS};
 use crate::mm::valid_buf;
 use core::sync::atomic::Ordering;
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Kolejka wiadomości dla jednego wątku
-// ─────────────────────────────────────────────────────────────────────────────
 const IPC_QUEUE_DEPTH: usize = 16;
 
 #[repr(C)]
@@ -22,14 +18,12 @@ struct MsgQueue {
     lock: Spinlock,
 }
 
-// IpcMsg nie implementuje Copy przez tablice u64 — ręcznie zerujemy
 unsafe fn zero_msg(m: *mut IpcMsg) {
     core::ptr::write_bytes(m as *mut u8, 0, core::mem::size_of::<IpcMsg>());
 }
 
 impl MsgQueue {
     const fn new() -> Self {
-        // SAFETY: zero-init jest poprawny dla IpcMsg (same liczby)
         Self {
             msgs: unsafe { core::mem::zeroed() },
             head: 0,
@@ -48,7 +42,6 @@ impl MsgQueue {
         (self.head + 1) % IPC_QUEUE_DEPTH == self.tail
     }
 
-    /// Wstaw wiadomość (kopiuj przez pole po polu — IpcMsg nie jest Copy)
     unsafe fn push(&mut self, msg: &IpcMsg) -> bool {
         if self.is_full() { return false; }
         let dst = &mut self.msgs[self.head];
@@ -64,7 +57,6 @@ impl MsgQueue {
         true
     }
 
-    /// Wyjmij wiadomość (kopiuj do dst)
     unsafe fn pop(&mut self, dst: *mut IpcMsg) -> bool {
         if self.is_empty() { return false; }
         let src = &self.msgs[self.tail];
@@ -81,19 +73,10 @@ impl MsgQueue {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Globalne kolejki — jedna na wątek
-// ─────────────────────────────────────────────────────────────────────────────
 static mut IPC_QUEUES: [MsgQueue; MAX_THREADS] = {
-    // const-init ręcznie (MsgQueue::new() jest const)
     [const { MsgQueue::new() }; MAX_THREADS]
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Syscalle IPC
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// IPC_SEND: rdi=ptr do IpcMsg w userspace
 pub unsafe fn sys_ipc_send(tf: *mut TF) -> i64 {
     let ptr = (*tf).rdi;
     let p4  = THREADS[CUR.load(Ordering::Relaxed)].cr3;
@@ -108,9 +91,7 @@ pub unsafe fn sys_ipc_send(tf: *mut TF) -> i64 {
     if to >= MAX_THREADS { return err::INVAL; }
     if THREADS[to].state == TS::Dead { return err::INVAL; }
 
-    // Wpisz nadawcę
     let from = THREADS[CUR.load(Ordering::Relaxed)].id;
-    // Musimy tymczasowo skopiować msg z from ustawionym
     let mut local_msg: IpcMsg = core::mem::zeroed();
     local_msg.from  = from;
     local_msg.to    = msg.to;
@@ -124,9 +105,7 @@ pub unsafe fn sys_ipc_send(tf: *mut TF) -> i64 {
     let ok = q.push(&local_msg);
     q.lock.unlock();
 
-    if !ok { return err::AGAIN; }  // kolejka pełna
-
-    // Obudź odbiorcę jeśli blokował na IPC_RECV
+    if !ok { return err::AGAIN; }  
     if THREADS[to].state == TS::Block {
         THREADS[to].state = TS::Ready;
     }
@@ -134,7 +113,6 @@ pub unsafe fn sys_ipc_send(tf: *mut TF) -> i64 {
     err::OK
 }
 
-/// IPC_RECV: rdi=ptr do IpcMsg (wypełnia kernel), rsi=flagi (0=non-blocking, 1=block)
 pub unsafe fn sys_ipc_recv(tf: *mut TF) -> i64 {
     let ptr   = (*tf).rdi;
     let block = (*tf).rsi != 0;
@@ -155,14 +133,13 @@ pub unsafe fn sys_ipc_recv(tf: *mut TF) -> i64 {
 
         if !block { return err::AGAIN; }
 
-        // Blokuj wątek i czekaj na wiadomość
         THREADS[c].state = TS::Block;
         crate::threading::thread_yield();
-        // Po powrocie z yield sprawdź ponownie
+
     }
 }
 
-/// IPC_POLL: rdi=ptr do u32 (wypełni liczbą wiadomości w kolejce)
+
 pub unsafe fn sys_ipc_poll(tf: *mut TF) -> i64 {
     let ptr = (*tf).rdi;
     let c   = CUR.load(Ordering::Relaxed);
@@ -179,11 +156,7 @@ pub unsafe fn sys_ipc_poll(tf: *mut TF) -> i64 {
     IPC_QUEUES[c].len() as i64
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Publiczne API kernela (dla wątków kernelowych)
-// ─────────────────────────────────────────────────────────────────────────────
 
-/// Wyślij wiadomość do wątku `to` bezpośrednio z kernela
 pub unsafe fn k_send(to: usize, tag: u32, data: [u64; 4]) -> bool {
     if to >= MAX_THREADS || THREADS[to].state == TS::Dead { return false; }
     let msg = IpcMsg {
@@ -206,7 +179,7 @@ pub unsafe fn k_send(to: usize, tag: u32, data: [u64; 4]) -> bool {
     ok
 }
 
-/// Sprawdź czy wątek ma nieprzeczytane wiadomości
+
 pub unsafe fn k_has_msgs(tid: usize) -> bool {
     if tid >= MAX_THREADS { return false; }
     !IPC_QUEUES[tid].is_empty()

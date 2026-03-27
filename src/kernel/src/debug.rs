@@ -1,5 +1,5 @@
 // CosinusOS — debug.rs
-// VGA text mode, serial COM1, formatowanie liczb
+
 
 use core::arch::asm;
 use crate::sync::Spinlock;
@@ -17,7 +17,6 @@ pub unsafe fn inb(port: u16) -> u8 {
 }
 pub fn io_wait() { unsafe { outb(0x80, 0); } }
 
-// ── Kolory VGA ────────────────────────────────────────────────────────────────
 pub mod col {
     pub const BLACK:   u8 = 0x00; pub const BLUE:    u8 = 0x01;
     pub const GREEN:   u8 = 0x02; pub const CYAN:    u8 = 0x03;
@@ -30,7 +29,6 @@ pub mod col {
     pub const fn attr(fg: u8, bg: u8) -> u8 { (bg << 4) | (fg & 0xF) }
 }
 
-// ── VGA state ─────────────────────────────────────────────────────────────────
 const VGA_W: usize    = 80;
 const VGA_H: usize    = 25;
 const VGA:   *mut u16 = 0xB8000 as *mut u16;
@@ -84,7 +82,6 @@ pub unsafe fn putc(c: char) {
     cursor_hw();
 }
 
-/// putc bez locka — używaj tylko gdy już trzymasz VGA_LOCK lub w kontekście single-threaded
 pub unsafe fn putc_raw(c: char) { putc(c); }
 
 pub unsafe fn print(s: &str) {
@@ -119,7 +116,6 @@ pub unsafe fn log_ok(label: &str, ok: bool) {
     VCOLOR = prev;
 }
 
-// ── Formatowanie ──────────────────────────────────────────────────────────────
 pub fn num_str<'a>(mut v: usize, buf: &'a mut [u8; 24]) -> &'a str {
     if v == 0 {
         buf[23] = b'0';
@@ -150,7 +146,6 @@ macro_rules! phex {
     ($v:expr) => {{ let mut b = [0u8; 18]; crate::debug::print(crate::debug::hex_str($v as u64, &mut b)); }};
 }
 
-// ── Serial COM1 ───────────────────────────────────────────────────────────────
 const COM1: u16 = 0x3F8;
 
 pub unsafe fn serial_init() {
@@ -176,5 +171,5 @@ pub unsafe fn serial_hex(v: u64) {
     serial_print(hex_str(v, &mut b));
 }
 
-/// Publiczny wrapper dla cursor_hw (dla terminala w lib.rs)
+
 pub unsafe fn cursor_hw_pub() { cursor_hw(); }

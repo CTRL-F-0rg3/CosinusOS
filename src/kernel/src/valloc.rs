@@ -99,18 +99,11 @@ impl VAddrSpace {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Publiczne API (funkcje wolne — operują na &mut VAddrSpace)
-// ─────────────────────────────────────────────────────────────────────────────
 
-/// Zaalokuj ciągły zakres `n_pages` stron.
-/// Zwraca adres bazowy lub None jeśli brak miejsca.
-///
-/// Algorytm: first-fit z free liście, fallback na bump.
 pub fn valloc_alloc(vs: &mut VAddrSpace, n_pages: usize) -> Option<u64> {
     if n_pages == 0 { return None; }
 
-    // ── Szukaj w free liście ─────────────────────────────────────────────────
+
     for i in 0..vs.free_len {
         let r = &vs.free[i];
         if r.pages >= n_pages {
@@ -118,10 +111,10 @@ pub fn valloc_alloc(vs: &mut VAddrSpace, n_pages: usize) -> Option<u64> {
             let leftover = r.pages - n_pages;
 
             if leftover == 0 {
-                // Usuń wpis — przesuń resztę
+            
                 free_remove(vs, i);
             } else {
-                // Skróć wpis od przodu
+           
                 vs.free[i].base  += n_pages as u64 * PAGE_SIZE as u64;
                 vs.free[i].pages  = leftover;
             }
@@ -129,7 +122,7 @@ pub fn valloc_alloc(vs: &mut VAddrSpace, n_pages: usize) -> Option<u64> {
         }
     }
 
-    // ── Bump allocation ──────────────────────────────────────────────────────
+
     let addr = vs.bump;
     let end  = addr + n_pages as u64 * PAGE_SIZE as u64;
 
@@ -139,19 +132,15 @@ pub fn valloc_alloc(vs: &mut VAddrSpace, n_pages: usize) -> Option<u64> {
     Some(addr)
 }
 
-/// Zwolnij zakres `n_pages` stron od adresu `addr`.
-/// Wstawia do free listy i scala z sąsiadami (koalescencja).
-///
-/// Nie zwalnia automatycznie ramek fizycznych — to robi sys_munmap/mm_free_phys.
+
 pub fn valloc_free(vs: &mut VAddrSpace, addr: u64, n_pages: usize) {
     if n_pages == 0 || addr < VSPACE_BASE || addr >= VSPACE_TOP { return; }
     if addr & (PAGE_SIZE as u64 - 1) != 0 { return; } // źle wyrównany
 
-    // ── Optymalizacja: czy można cofnąć bump? ────────────────────────────────
     let expected_bump = addr + n_pages as u64 * PAGE_SIZE as u64;
     if expected_bump == vs.bump {
         vs.bump = addr;
-        // Sprawdź czy free lista ma regiony przylegające z lewej → też cofnij
+
         loop {
             let mut merged = false;
             for i in 0..vs.free_len {
@@ -167,14 +156,13 @@ pub fn valloc_free(vs: &mut VAddrSpace, addr: u64, n_pages: usize) {
         return;
     }
 
-    // ── Wstaw do free listy (posortowanie wg adresu) ─────────────────────────
+
     if vs.free_len >= MAX_FREE {
-        // Free lista pełna — porzuć wpis (leak wirtualnej przestrzeni, nie fizycznej)
-        // W praktyce 64 wpisów wystarczy; overflow to sygnał do garbage collect
+ 
         return;
     }
 
-    // Znajdź pozycję insertu (sortowanie wg base rosnąco)
+
     let mut ins = vs.free_len;
     for i in 0..vs.free_len {
         if vs.free[i].base > addr {
@@ -183,7 +171,6 @@ pub fn valloc_free(vs: &mut VAddrSpace, addr: u64, n_pages: usize) {
         }
     }
 
-    // Przesuń wpisy od ins w prawo o 1
     let mut j = vs.free_len;
     while j > ins {
         vs.free[j] = vs.free[j - 1];
@@ -192,49 +179,39 @@ pub fn valloc_free(vs: &mut VAddrSpace, addr: u64, n_pages: usize) {
     vs.free[ins] = FreeRegion { base: addr, pages: n_pages };
     vs.free_len += 1;
 
-    // ── Koalescencja ─────────────────────────────────────────────────────────
     coalesce(vs);
 }
 
-/// Sprawdź czy adres należy do zaalokowanego zakresu.
-/// Przydatne przy walidacji wskaźników userspace na poziomie valloc
-/// (uzupełnia valid_buf z mm.rs która sprawdza fizyczne PTE).
 pub fn valloc_contains(vs: &VAddrSpace, addr: u64, pages: usize) -> bool {
     if addr < VSPACE_BASE || addr >= VSPACE_TOP { return false; }
     let end = addr + pages as u64 * PAGE_SIZE as u64;
     if end > vs.bump { return false; }
 
-    // Sprawdź czy nie leży w wolnym (zwróconym) regionie
     for i in 0..vs.free_len {
         let r = &vs.free[i];
         if r.base < end && r.end() > addr {
-            return false; // nakłada się z wolnym regionem
+            return false; 
         }
     }
     true
 }
 
-/// Zwolnij całą przestrzeń adresową (przy exit wątku).
-/// Nie zwalnia fizycznych ramek — to robi threading::cleanup_thread.
 pub fn valloc_reset(vs: &mut VAddrSpace) {
     vs.bump     = VSPACE_BASE;
     vs.free_len = 0;
-    // Wyzeruj wpisy dla bezpieczeństwa
+
     for i in 0..MAX_FREE { vs.free[i] = FreeRegion::zero(); }
 }
 
-/// Zwróć ile stron jest aktualnie zaalokowanych (przybliżone — nie liczy fragmentacji)
+
 pub fn valloc_used_pages(vs: &VAddrSpace) -> usize {
     let total_bump = ((vs.bump - VSPACE_BASE) / PAGE_SIZE as u64) as usize;
     let free_pages: usize = vs.free[..vs.free_len].iter().map(|r| r.pages).sum();
     total_bump.saturating_sub(free_pages)
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Wewnętrzne pomocniki
-// ─────────────────────────────────────────────────────────────────────────────
 
-/// Usuń wpis z free listy pod indeksem i
+
 #[inline]
 fn free_remove(vs: &mut VAddrSpace, i: usize) {
     for j in i..(vs.free_len - 1) {
@@ -244,26 +221,23 @@ fn free_remove(vs: &mut VAddrSpace, i: usize) {
     vs.free[vs.free_len] = FreeRegion::zero();
 }
 
-/// Scal sąsiadujące regiony w free liście (lista już posortowana wg adresu)
 fn coalesce(vs: &mut VAddrSpace) {
     let mut i = 0;
     while i + 1 < vs.free_len {
         let end_i = vs.free[i].end();
         let base_j = vs.free[i + 1].base;
         if end_i == base_j {
-            // Scal i+1 do i
+            
             vs.free[i].pages += vs.free[i + 1].pages;
             free_remove(vs, i + 1);
-            // Nie inkrementuj i — spróbuj scalić ponownie z nowym i+1
+           
         } else {
             i += 1;
         }
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Testy jednostkowe (uruchamialne w std z #[cfg(test)])
-// ─────────────────────────────────────────────────────────────────────────────
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -295,10 +269,10 @@ mod tests {
         let mut vs = VAddrSpace::new();
         let a = valloc_alloc(&mut vs, 2).unwrap();
         let b = valloc_alloc(&mut vs, 2).unwrap();
-        let _ = valloc_alloc(&mut vs, 2); // żeby bump nie cofnął
+        let _ = valloc_alloc(&mut vs, 2); 
         valloc_free(&mut vs, a, 2);
         valloc_free(&mut vs, b, 2);
-        // Po koalescencji powinien być jeden wpis 4 stron
+
         assert_eq!(vs.free_len, 1);
         assert_eq!(vs.free[0].pages, 4);
     }
@@ -308,7 +282,7 @@ mod tests {
         let mut vs = VAddrSpace::new();
         let a = valloc_alloc(&mut vs, 8).unwrap();
         valloc_free(&mut vs, a, 8);
-        // bump powinien cofnąć się do VSPACE_BASE
+      
         assert_eq!(vs.bump, VSPACE_BASE);
         assert_eq!(vs.free_len, 0);
     }
@@ -327,12 +301,11 @@ mod tests {
     fn test_partial_reuse() {
         let mut vs = VAddrSpace::new();
         let a = valloc_alloc(&mut vs, 8).unwrap();
-        let _ = valloc_alloc(&mut vs, 1); // anchor żeby bump nie cofał
+        let _ = valloc_alloc(&mut vs, 1);
         valloc_free(&mut vs, a, 8);
-        // Zaalokuj 3 z wolnych 8
         let b = valloc_alloc(&mut vs, 3).unwrap();
         assert_eq!(b, a);
-        assert_eq!(vs.free[0].pages, 5); // zostało 5
+        assert_eq!(vs.free[0].pages, 5);
         assert_eq!(vs.free[0].base, a + 3 * PAGE_SIZE as u64);
     }
 }

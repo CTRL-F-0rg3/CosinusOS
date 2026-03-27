@@ -1,5 +1,5 @@
 // CosinusOS — mm.rs
-// Zarządzanie pamięcią: PMM (frame allocator) + VMM (4-level paging)
+
 
 use core::arch::asm;
 use crate::sync::Spinlock;
@@ -127,9 +127,8 @@ unsafe fn goc(tab: PhysAddr, idx: usize, flags: u64) -> PhysAddr {
         let c = zpg();
         t.e[idx] = pte_make(c, flags);
     } else {
-        // Wpis istnieje — dodaj wymagane flagi (np. PTE_U dla userspace)
         t.e[idx] |= flags & (PTE_W | PTE_U);
-        // Rozbij huge page jeśli potrzeba
+
         if t.e[idx] & (1 << 7) != 0 {
             let huge_phys = t.e[idx] & 0x000F_FFFF_FFE0_0000;
             let c = zpg();
@@ -241,7 +240,7 @@ pub unsafe fn new_user_p4() -> PhysAddr {
     n
 }
 
-// ── Helper: pnum przez serial bez alokacji ────────────────────────────────────
+
 unsafe fn pnum_serial(mut v: usize) {
     if v == 0 { serial_print("0"); return; }
     let mut buf = [0u8; 24];
@@ -256,6 +255,6 @@ unsafe fn pnum_serial(mut v: usize) {
     }
 }
 
-// Stałe rozmiarów stosów (używane przez threading)
+
 pub const KERNEL_STACK_SIZE: usize = 0x8000; // 32KB
 pub const USER_STACK_SIZE:   usize = 0x4000; // 16KB

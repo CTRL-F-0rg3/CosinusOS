@@ -1,5 +1,5 @@
 // CosinusOS — sync.rs
-// Prymitywy synchronizacji kernela
+
 
 use core::sync::atomic::{AtomicBool, Ordering};
 

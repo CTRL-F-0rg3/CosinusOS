@@ -1,11 +1,8 @@
 // libcosinus — fmt.rs
-// Formatowanie liczb bez alokacji heap.
-// Wszystkie funkcje zapisują do &mut [u8] i zwracają &str.
 
-/// Bufor wystarczający na dowolną u64 (20 cyfr + znak)
 pub const NUM_BUF_SIZE: usize = 24;
 
-/// Nowy, wyzerowany bufor na liczby
+
 #[inline]
 pub fn num_buf() -> [u8; NUM_BUF_SIZE] { [0u8; NUM_BUF_SIZE] }
 
@@ -55,7 +52,7 @@ pub fn u64_to_hex<'a>(v: u64, buf: &'a mut [u8; NUM_BUF_SIZE]) -> &'a str {
         buf[i] = HEX[(n & 0xF) as usize];
         n >>= 4;
     }
-    // Przesuń za "0x"
+    
     let digits = &buf[i..NUM_BUF_SIZE];
     let dlen = digits.len();
     buf.copy_within(i..NUM_BUF_SIZE, 2);
@@ -72,17 +69,11 @@ pub fn u64_to_hex_pad<'a>(v: u64, pad: usize, buf: &'a mut [u8; NUM_BUF_SIZE]) -
     core::str::from_utf8(&buf[..2 + pad]).unwrap_or("?")
 }
 
-// ── Bool / misc ───────────────────────────────────────────────────────────────
+
 
 pub fn bool_to_str(v: bool) -> &'static str { if v { "true" } else { "false" } }
 
-// ── FmtBuf — prosty write-buffer na stosie ────────────────────────────────────
-//
-// Użycie:
-//   let mut fb = FmtBuf::<128>::new();
-//   fb.push_str("x = ");
-//   fb.push_u64(42);
-//   print(fb.as_str());
+
 
 pub struct FmtBuf<const N: usize> {
     buf: [u8; N],
@@ -144,9 +135,9 @@ impl<const N: usize> core::fmt::Write for FmtBuf<N> {
     }
 }
 
-// ── Makro fmt! na stosie ───────────────────────────────────────────────────────
-//
-// cos_fmt!(512, "pid={} addr={:#x}", pid, addr)  →  FmtBuf<512>
+// ── Makro fmt! on stack ───────────────────────────────────────────────────────
+
+
 
 #[macro_export]
 macro_rules! cos_fmt {

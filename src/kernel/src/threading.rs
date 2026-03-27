@@ -169,45 +169,22 @@ pub unsafe fn spawn_user_on_cr3(name: &str, entry: u64, arg: u64, cr3: PhysAddr)
     -1
 }
 
-// Układ stosu od krsp w górę (thread_switch popuje w tej kolejności):
-//
-//   thread_switch wykonuje:
-//     pop r15, pop r14, pop r13, pop r12, pop rbp, pop rbx, ret
-//
-//   Więc na stosie od krsp musi być:
-//   [krsp+0 ] r15  = arg
-//   [krsp+8 ] r14  = entry
-//   [krsp+16] r13  = ut
-//   [krsp+24] r12  = 0
-//   [krsp+32] rbp  = 0
-//   [krsp+40] rbx  = 0
-//   [krsp+48] ret addr = tramp_u / tramp_k   ← ret skacze tutaj
-//
-//   tramp_u następnie wykonuje iretq z ramką:
-//   [krsp+56] RIP    = entry
-//   [krsp+64] CS     = 0x1B
-//   [krsp+72] RFLAGS = 0x202
-//   [krsp+80] RSP    = ut
-//   [krsp+88] SS     = 0x23
+
 fn init_thread_stack(t: &mut Thread, kt: VirtAddr, ut: VirtAddr, entry: u64, arg: u64, user: bool) {
     let mut ksp = kt;
     unsafe {
         if user {
-            // iretq frame (od najwyższego adresu — push kolejno)
+            // iretq frame 
             ksp -= 8; *(ksp as *mut u64) = 0x23;       // SS
             ksp -= 8; *(ksp as *mut u64) = ut;          // RSP
             ksp -= 8; *(ksp as *mut u64) = 0x202;       // RFLAGS (IF=1)
             ksp -= 8; *(ksp as *mut u64) = 0x1B;        // CS user code
             ksp -= 8; *(ksp as *mut u64) = entry;       // RIP
-            // ret address → tramp_u wykona iretq
+           
             ksp -= 8; *(ksp as *mut u64) = tramp_u as *const () as u64;
         } else {
             ksp -= 8; *(ksp as *mut u64) = tramp_k as *const () as u64;
         }
-        // callee-saved regs w kolejności odwrotnej do pop w thread_switch:
-        // thread_switch: pop r15, r14, r13, r12, rbp, rbx
-        // więc push kolejno: rbx, rbp, r12, r13, r14, r15
-        // → na stosie od dołu (niższy adres): r15, r14, r13, r12, rbp, rbx
         ksp -= 8; *(ksp as *mut u64) = 0u64;            // rbx
         ksp -= 8; *(ksp as *mut u64) = 0u64;            // rbp
         ksp -= 8; *(ksp as *mut u64) = 0u64;            // r12
@@ -260,19 +237,13 @@ pub unsafe fn schedule() {
     serial_print(" next=");        serial_hex(next as u64);
     serial_print(" new_krsp=");    serial_hex(THREADS[next].krsp);
     serial_print("\n");
-
-    // Jeśli następny wątek to userspace (krsp=0, nie ma kernel stosu)
-    // wróć do niego przez enter_userspace zamiast thread_switch
     if THREADS[next].cr3 != 0 && THREADS[next].cr3 != K_P4 {
         let entry = crate::userspace_loader::US_ENTRY;
         let stack = crate::userspace_loader::US_STACK;
         let cr3   = THREADS[next].cr3;
         serial_print("[SCHED] -> userspace\n");
-        // Zwolnij lock przed enter_userspace (nie wrócimy)
         SCHED_LOCK.locked.store(false, Ordering::Release);
-        // Zmień CR3 na userspace
         if cr3 != 0 { asm!("mov cr3, {}", in(reg) cr3, options(nostack)); }
-        // Wróć do userspace przez iretq — nie przez thread_switch
         enter_userspace(entry, stack, 0, cr3);
     }
 
@@ -316,9 +287,7 @@ pub unsafe fn jump_to_scheduler() -> ! {
 
 pub unsafe fn thread_yield() { schedule(); }
 
-// thread_switch: zapisuje callee-saved na starym stosie, ładuje nowy
-// push: rbx, rbp, r12, r13, r14, r15  → na stosie od dołu: r15,r14,r13,r12,rbp,rbx
-// pop:  r15, r14, r13, r12, rbp, rbx
+
 #[unsafe(naked)]
 unsafe extern "C" fn thread_switch(old: *mut VirtAddr, new: VirtAddr) {
     core::arch::naked_asm!(

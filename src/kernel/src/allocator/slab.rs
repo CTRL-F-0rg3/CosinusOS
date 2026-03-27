@@ -1,6 +1,5 @@
 // CosinusOS — allocator/slab.rs
-// Slab allocator: klasy 8/16/32/64/128/256/512B, intrusywna free-lista, O(1) alloc/free.
-// Nie thread-safe — spinlock zapewnia KernelHeap.
+
 
 use core::ptr;
 
@@ -20,7 +19,6 @@ struct SlabClass {
     slab_count: usize,
 }
 
-// SAFETY: dostęp wyłącznie przez KernelHeap za spinlockiem
 unsafe impl Sync for SlabClass {}
 unsafe impl Send for SlabClass {}
 
@@ -63,7 +61,6 @@ pub struct SlabAllocator {
     page_free:  Option<PageFree>,
 }
 
-// SAFETY: dostęp wyłącznie przez KernelHeap za spinlockiem
 unsafe impl Sync for SlabAllocator {}
 unsafe impl Send for SlabAllocator {}
 

@@ -1,10 +1,5 @@
 // CosinusOS — syscall_api.rs
-// Centralne API syscalli: numery, struktury, typy zwracane
-// Używane zarówno przez kernel (dispatch) jak i userspace (jako import)
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Numery syscalli
-// ─────────────────────────────────────────────────────────────────────────────
 pub mod nr {
     pub const EXIT:         u64 = 0;
     pub const WRITE:        u64 = 1;
@@ -22,55 +17,48 @@ pub mod nr {
     pub const DEBUG_PRINT:  u64 = 13;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Kody błędów (rax < 0 oznacza błąd: !err_code jako u64)
-// ─────────────────────────────────────────────────────────────────────────────
+
 pub mod err {
     pub const OK:          i64 =  0;
-    pub const INVAL:       i64 = -1;  // nieprawidłowy argument
-    pub const NOMEM:       i64 = -2;  // brak pamięci
-    pub const NOSLOT:      i64 = -3;  // brak slotu wątku
-    pub const FAULT:       i64 = -4;  // nieprawidłowy wskaźnik userspace
-    pub const AGAIN:       i64 = -5;  // kolejka pusta, spróbuj ponownie
-    pub const NOSYS:       i64 = -6;  // nieznany syscall
-    pub const PERM:        i64 = -7;  // brak uprawnień
+    pub const INVAL:       i64 = -1;  
+    pub const NOMEM:       i64 = -2; 
+    pub const NOSLOT:      i64 = -3; 
+    pub const FAULT:       i64 = -4; 
+    pub const AGAIN:       i64 = -5; 
+    pub const NOSYS:       i64 = -6;  
+    pub const PERM:        i64 = -7;  
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Struktury danych przekazywane przez syscalle
-// (repr(C) — identyczny layout po obu stronach)
-// ─────────────────────────────────────────────────────────────────────────────
 
-/// Deskryptor spawnu wątku (syscall SPAWN)
 #[repr(C)]
 pub struct SpawnArgs {
-    pub entry:    u64,        // adres funkcji wejściowej
-    pub arg:      u64,        // argument (rdi przy wejściu)
-    pub stack_sz: u32,        // rozmiar stosu userspace (0 = domyślny 0x4000)
-    pub flags:    u32,        // SpawnFlags (patrz niżej)
-    pub name:     [u8; 16],   // nazwa wątku (null-terminated)
+    pub entry:    u64,        
+    pub arg:      u64,        
+    pub stack_sz: u32,        
+    pub flags:    u32,        
+    pub name:     [u8; 16],   
 }
 
 pub mod spawn_flags {
-    pub const KERNEL: u32 = 0;       // wątek kernelowy (tylko kernel może)
-    pub const USER:   u32 = 1 << 0;  // wątek userspace
-    pub const DETACH: u32 = 1 << 1;  // nie trzymaj slotu po exit
+    pub const KERNEL: u32 = 0;       
+    pub const USER:   u32 = 1 << 0;  
+    pub const DETACH: u32 = 1 << 1;  
 }
 
-/// Wiadomość IPC (syscall IPC_SEND / IPC_RECV)
+
 #[repr(C)]
 pub struct IpcMsg {
-    pub from:  u32,           // thread ID nadawcy (wypełnia kernel przy recv)
-    pub to:    u32,           // thread ID odbiorcy
-    pub tag:   u32,           // typ wiadomości (definiuje userspace)
+    pub from:  u32,           
+    pub to:    u32,           
+    pub tag:   u32,           
     pub _pad:  u32,
-    pub data:  [u64; 4],      // 32 bajty inline danych (bez alokacji)
-    pub ptr:   u64,           // opcjonalny wskaźnik na większy bufor
-    pub len:   u32,           // rozmiar bufora pod ptr (0 = brak)
+    pub data:  [u64; 4],      
+    pub ptr:   u64,           
+    pub len:   u32,           
     pub _pad2: u32,
 }
 
-/// Wynik THREAD_ID
+
 #[repr(C)]
 pub struct ThreadInfo {
     pub tid:  u32,
@@ -78,28 +66,17 @@ pub struct ThreadInfo {
     pub _pad: [u8; 3],
 }
 
-/// Wynik TIME
+
 #[repr(C)]
 pub struct TimeInfo {
-    pub ticks:  u64,   // liczba ticków od startu (100Hz)
-    pub uptime: u64,   // sekundy od startu
+    pub ticks:  u64,   
+    pub uptime: u64,   
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Tabela dispatchera (używana w threading.rs / perm.rs)
-// ─────────────────────────────────────────────────────────────────────────────
-//
-// Każdy syscall: fn(tf: *mut TF) -> i64
-// Wynik trafia do tf.rax (jako u64, błąd = !err as u64)
-//
-// Argumenty z TrapFrame:
-//   rdi = arg1, rsi = arg2, rdx = arg3, r10 = arg4, r8 = arg5
-//   rax = numer syscalla (przed wywołaniem)
-//
+
 pub type SyscallFn = unsafe fn(*mut crate::perm::TF) -> i64;
 
-/// Dispatcher: wywołuje właściwą funkcję syscalla
-/// Zwraca i64 — wynik wpisywany do tf.rax
+
 #[no_mangle]
 pub unsafe fn syscall_dispatch_v2(tf: *mut crate::perm::TF) {
     let num  = (*tf).rax;
@@ -122,10 +99,6 @@ pub unsafe fn syscall_dispatch_v2(tf: *mut crate::perm::TF) {
     };
     (*tf).rax = ret as u64;
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Implementacje syscalli
-// ─────────────────────────────────────────────────────────────────────────────
 
 unsafe fn sys_exit(tf: *mut crate::perm::TF) -> i64 {
     use crate::threading::{THREADS, CUR, TS, NTHREADS, schedule};
@@ -161,7 +134,7 @@ unsafe fn sys_write(tf: *mut crate::perm::TF) -> i64 {
 }
 
 unsafe fn sys_read(tf: *mut crate::perm::TF) -> i64 {
-    // Na razie stdin = 0, czytamy z kolejki klawiatury
+   
     use crate::threading::{THREADS, CUR};
     use crate::mm::valid_buf;
     use core::sync::atomic::Ordering;
@@ -214,7 +187,7 @@ unsafe fn sys_spawn(tf: *mut crate::perm::TF) -> i64 {
         let tid = crate::threading::spawn_user_on_cr3(name, args.entry, args.arg, new_cr3);
         if tid >= 0 { tid as i64 } else { err::NOSLOT }
     } else {
-        err::PERM  // userspace nie może spawnować wątków kernelowych
+        err::PERM  
     }
 }
 
@@ -237,22 +210,22 @@ unsafe fn sys_mem_alloc(tf: *mut crate::perm::TF) -> i64 {
     use crate::mm::{mm_alloc, vmap, PTE_W, PTE_U, PAGE_SIZE};
     use core::sync::atomic::Ordering;
 
-    let pages = (*tf).rdi as usize;  // ile stron (4KB każda)
-    let hint  = (*tf).rsi;           // sugerowany adres wirtualny (0 = kernel wybiera)
+    let pages = (*tf).rdi as usize;  
+    let hint  = (*tf).rsi;           
 
-    if pages == 0 || pages > 512 { return err::INVAL; }  // max 2MB naraz
+    if pages == 0 || pages > 512 { return err::INVAL; } 
 
     let p4   = THREADS[CUR.load(Ordering::Relaxed)].cr3;
-    // Prosta alokacja od podanego adresu lub od 0x1000_0000 (256MB)
+
     let base = if hint != 0 && hint >= 0x1000 { hint } else { 0x1000_0000u64 };
-    // Wyrównaj do strony
+
     let vbase = (base + 0xFFF) & !0xFFF;
 
     for i in 0..pages {
         let vaddr = vbase + i as u64 * PAGE_SIZE as u64;
         let phys  = mm_alloc();
         if vmap(p4, vaddr, phys, PTE_W | PTE_U) != 0 {
-            // Częściowa alokacja — zwróć ile zmapowaliśmy (uproszczenie)
+
             return if i > 0 { vbase as i64 } else { err::NOMEM };
         }
         core::ptr::write_bytes(phys as *mut u8, 0, PAGE_SIZE);

@@ -79,25 +79,6 @@ pub struct PluginDescriptor {
 }
 unsafe impl Sync for PluginDescriptor {}
 
-// Makro define_plugin!
-//
-// Pola opcjonalne (tick, draw, on_key, on_cmd, on_ipc, shutdown) są podawane
-// bezpośrednio jako Some(fn) lub None — zamiast .or() które nie jest const.
-//
-// Użycie:
-//
-//   define_plugin! {
-//       export_as: MY_PLUGIN,
-//       name: "myplugin", version: (0,1,0), flags: PluginFlags::AUTOSTART,
-//       cmds: [("cmd", "opis")],
-//       init:     my_init,
-//       tick:     Some(my_tick),
-//       draw:     Some(my_draw),
-//       on_key:   None,
-//       on_cmd:   Some(my_cmd),
-//       on_ipc:   None,
-//       shutdown: None,
-//   }
 
 #[macro_export]
 macro_rules! define_plugin {

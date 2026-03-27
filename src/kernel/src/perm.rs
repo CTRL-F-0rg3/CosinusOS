@@ -1,5 +1,5 @@
 // CosinusOS — perm.rs
-// Struktury CPU: GDT, TSS, IDT, PIC, PIT, ISR
+
 
 use core::arch::{asm, naked_asm};
 use crate::debug::{col, outb, io_wait, print_raw, printc, hex_str, print};
@@ -146,9 +146,9 @@ pub unsafe fn init_pic() {
     outb(0x21, 0x20); io_wait(); outb(0xA1, 0x28); io_wait();
     outb(0x21, 0x04); io_wait(); outb(0xA1, 0x02); io_wait();
     outb(0x21, 0x01); io_wait(); outb(0xA1, 0x01); io_wait();
-    // Master: IRQ0 (timer) + IRQ1 (kbd) odblokowane, reszta zamaskowana
+
     outb(0x21, 0xFC);
-    // Slave: wszystko zamaskowane (nie używamy myszy w kernel)
+ 
     outb(0xA1, 0xFF);
 }
 
@@ -263,7 +263,6 @@ pub unsafe extern "C" fn handle_pf(f: *mut TF) {
     print(if err & 4 != 0 { " USR" } else { " KRN" });
     print(if err & 2 != 0 { " W\n" } else { " R\n" });
 
-    // Sprawdź page table dla faulting address
     use crate::mm::pt_ptr;
     let pml4i = ((addr >> 39) & 0x1FF) as usize;
     let pdpti = ((addr >> 30) & 0x1FF) as usize;
@@ -339,7 +338,7 @@ pub unsafe extern "C" fn handle_syscall(f: *mut TF) {
     crate::syscall_api::syscall_dispatch_v2(f);
 }
 
-// ── Publiczne API ─────────────────────────────────────────────────────────────
+// ── PublicAPI ─────────────────────────────────────────────────────────────
 pub unsafe fn kb_pop() -> Option<char> {
     crate::input::input_poll()
 }

@@ -1,9 +1,5 @@
 // libcosinus — collections.rs
-// CosVec<T>, CosString, CosBox<T> — kolekcje userspace oparte na GlobalAlloc.
-// Wymagają zainicjalizowanego HEAP (alloc_impl.rs).
-//
-// Celowo nie używamy extern crate alloc / std::vec::Vec — piszemy własne
-// żeby mieć pełną kontrolę nad ABI i zachowaniem w no_std.
+
 
 use core::alloc::{GlobalAlloc, Layout};
 use core::ptr::{self, NonNull};

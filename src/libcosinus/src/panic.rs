@@ -1,17 +1,12 @@
 // libcosinus — panic.rs
-// Panic handler i abort dla procesów userspace.
-//
-// Przy panicu: drukuje lokalizację na stderr + wywołuje exit(101).
-// Nie używa alokacji — pisze bezpośrednio przez syscall write.
+
 
 use core::panic::PanicInfo;
 use crate::fmt::FmtBuf;
 
-/// Wywoływany przez Rust przy każdym panic!().
-/// Drukuje komunikat na stderr i kończy proces kodem 101.
+
 #[panic_handler]
 fn panic_handler(info: &PanicInfo) -> ! {
-    // Drukujemy bez alokacji — FmtBuf na stosie
     let mut buf = FmtBuf::<256>::new();
 
     buf.push_str("\n[PANIC]");
@@ -34,17 +29,14 @@ fn panic_handler(info: &PanicInfo) -> ! {
     abort(101)
 }
 
-/// Zakończ proces podanym kodem błędu. Nigdy nie wraca.
 pub fn abort(code: i32) -> ! {
     crate::exit(code)
 }
 
-/// Zakończ z kodem 0 (sukces).
 pub fn quit() -> ! {
     crate::exit(0)
 }
 
-/// assert! który działa w no_std przez panic!
 #[macro_export]
 macro_rules! cos_assert {
     ($cond:expr) => {
@@ -55,7 +47,6 @@ macro_rules! cos_assert {
     };
 }
 
-/// unwrap() z czytelnym komunikatem zamiast "called unwrap on None"
 #[macro_export]
 macro_rules! cos_unwrap {
     ($expr:expr) => {
@@ -72,7 +63,7 @@ macro_rules! cos_unwrap {
     };
 }
 
-/// unwrap() dla Result
+
 #[macro_export]
 macro_rules! cos_try {
     ($expr:expr) => {

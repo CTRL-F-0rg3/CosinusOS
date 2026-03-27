@@ -1,13 +1,4 @@
 // libcosinus — alloc_impl.rs
-// Slab allocator dla userspace: GlobalAlloc oparty na sys_mmap.
-//
-// Klasy rozmiarów: 8, 16, 32, 64, 128, 256, 512, 1024, 2048 B
-// Alokacje > 2048B idą bezpośrednio przez mmap (per-obiekt).
-//
-// Każda klasa trzyma intrusywną listę wolnych slotów.
-// Nowe slaby (strony 4KB) są żądane przez sys_mmap.
-// Brak globalnego locka — userspace jest single-threaded per domyśl
-// (jeśli potrzebujesz MT, dodaj AtomicBool spinlock w UserHeap).
 
 use core::alloc::{GlobalAlloc, Layout};
 use core::cell::UnsafeCell;
@@ -112,7 +103,6 @@ unsafe impl GlobalAlloc for UserHeap {
             return inner.classes[ci].alloc_slot();
         }
 
-        // Duża alokacja — mmap bezpośrednio
         let pages = (size + PAGE_SIZE - 1) / PAGE_SIZE;
         let ptr = crate::mmap(pages * PAGE_SIZE, mmap_prot::READ | mmap_prot::WRITE);
         if ptr.is_null() { ptr::null_mut() } else { ptr }
@@ -128,7 +118,6 @@ unsafe impl GlobalAlloc for UserHeap {
             return;
         }
 
-        // Duża alokacja — zwróć przez munmap
         let pages = (size + PAGE_SIZE - 1) / PAGE_SIZE;
         let _ = crate::munmap(ptr, pages * PAGE_SIZE);
     }
