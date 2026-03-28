@@ -9,19 +9,20 @@ pub fn build(b: *std.Build) void {
         "-Z",              "build-std=core,alloc", "--target-dir", build_dir ++ "/userspace_target",
     });
 
-    const copy_bin = b.addSystemCommand(&.{
-        "cp",
-        build_dir ++ "/userspace_target/x86_64-unknown-none/release/userspace",
-        build_dir ++ "/userspace.bin",
+    // Strip ELF headers — output raw binary at correct offsets from 0x400000
+    const objcopy = b.addSystemCommand(&.{
+        "objcopy",              "-O",                                                                   "binary",
+        "--only-section=.text", "--only-section=.rodata",                                               "--only-section=.data",
+        "--only-section=.bss",  build_dir ++ "/userspace_target/x86_64-unknown-none/release/userspace", build_dir ++ "/userspace.bin",
     });
-    copy_bin.step.dependOn(&cargo_us.step);
+    objcopy.step.dependOn(&cargo_us.step);
 
     const copy_to_iso = b.addSystemCommand(&.{
         "sh", "-c",
         "mkdir -p ../../iso/boot && cp " ++
             build_dir ++ "/userspace.bin ../../iso/boot/userspace.bin",
     });
-    copy_to_iso.step.dependOn(&copy_bin.step);
+    copy_to_iso.step.dependOn(&objcopy.step);
 
     b.default_step.dependOn(&copy_to_iso.step);
 

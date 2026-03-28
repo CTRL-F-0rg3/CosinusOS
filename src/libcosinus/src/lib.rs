@@ -1,279 +1,154 @@
-// libcosinus — biblioteka systemowa CosinusOS
-// Linkowana statycznie do każdego procesu userspace.
+// libcosinus — lib.rs
+// Userspace standard library for CosinusOS.
+// Syscall ABI: int 0x80, rax=nr, rdi/rsi/rdx=args, rax=return value.
+// Only syscalls actually implemented in kernel syscall_api.rs are exposed.
 
 #![no_std]
 #![allow(dead_code)]
 
-pub mod alloc_impl;
-pub mod fmt;
-pub mod collections;
-pub mod panic;
-
-pub use collections::{CosVec, CosString, CosBox, IntoResult};
-pub use fmt::{FmtBuf, u64_to_str, i64_to_str, u64_to_hex, usize_to_str, num_buf};
-
-// ── Numery syscalli ──────────────────────────────────────────────────────────
+// ── Syscall numbers (must match kernel syscall_api.rs) ────────────────────────
 pub mod nr {
-    pub const EXIT:            u64 = 0;
-    pub const WRITE:           u64 = 1;
-    pub const READ:            u64 = 2;
-    pub const YIELD:           u64 = 3;
-    pub const SPAWN:           u64 = 4;
-    pub const SLEEP:           u64 = 5;
-    pub const MEM_ALLOC:       u64 = 6;
-    pub const MEM_FREE:        u64 = 7;
-    pub const IPC_SEND:        u64 = 8;
-    pub const IPC_RECV:        u64 = 9;
-    pub const IPC_POLL:        u64 = 10;
-    pub const THREAD_ID:       u64 = 11;
-    pub const TIME:            u64 = 12;
-    pub const DEBUG_PRINT:     u64 = 13;
-    pub const THREAD_SET_PRIO: u64 = 14;
-    pub const WAIT:            u64 = 15;
-    pub const OPEN:            u64 = 20;
-    pub const CLOSE:           u64 = 21;
-    pub const SEEK:            u64 = 22;
-    pub const FSTAT:           u64 = 23;
-    pub const IOCTL:           u64 = 24;
-    pub const MMAP:            u64 = 30;
-    pub const MUNMAP:          u64 = 31;
-    pub const MPROTECT:        u64 = 32;
-    pub const SIGNAL:          u64 = 40;
-    pub const KILL:            u64 = 41;
-    pub const SIGRET:          u64 = 42;
-    pub const GETCWD:          u64 = 50;
-    pub const CHDIR:           u64 = 51;
-    pub const PIPE:            u64 = 60;
+    pub const EXIT:        u64 = 0;
+    pub const WRITE:       u64 = 1;
+    pub const READ:        u64 = 2;
+    pub const YIELD:       u64 = 3;
+    pub const SPAWN:       u64 = 4;
+    pub const SLEEP:       u64 = 5;
+    pub const MEM_ALLOC:   u64 = 6;
+    pub const MEM_FREE:    u64 = 7;
+    pub const IPC_SEND:    u64 = 8;
+    pub const IPC_RECV:    u64 = 9;
+    pub const IPC_POLL:    u64 = 10;
+    pub const THREAD_ID:   u64 = 11;
+    pub const TIME:        u64 = 12;
+    pub const DEBUG_PRINT: u64 = 13;
 }
 
-// ── Kody błędów ──────────────────────────────────────────────────────────────
+// ── Error codes (must match kernel syscall_api.rs) ────────────────────────────
 pub mod err {
-    pub const OK:       i64 =  0;
-    pub const INVAL:    i64 = -1;
-    pub const NOMEM:    i64 = -2;
-    pub const NOSLOT:   i64 = -3;
-    pub const FAULT:    i64 = -4;
-    pub const AGAIN:    i64 = -5;
-    pub const NOSYS:    i64 = -6;
-    pub const PERM:     i64 = -7;
-    pub const NOENT:    i64 = -8;
-    pub const BADF:     i64 = -9;
-    pub const BUSY:     i64 = -10;
-    pub const OVERFLOW: i64 = -11;
-    pub const NOSUP:    i64 = -12;
-    pub const ALIGN:    i64 = -13;
-    pub const EXIST:    i64 = -14;
+    pub const OK:    i64 =  0;
+    pub const INVAL: i64 = -1;
+    pub const NOMEM: i64 = -2;
+    pub const NOSLOT:i64 = -3;
+    pub const FAULT: i64 = -4;
+    pub const AGAIN: i64 = -5;
+    pub const NOSYS: i64 = -6;
+    pub const PERM:  i64 = -7;
 }
 
-// ── Typy wynikowe ─────────────────────────────────────────────────────────────
 pub type CosResult<T> = Result<T, i64>;
 
-pub trait CosResultExt<T> {
-    fn cos_ok(self) -> CosResult<T>;
+#[inline(always)]
+fn ok(r: i64) -> CosResult<i64> {
+    if r >= 0 { Ok(r) } else { Err(r) }
 }
 
-impl CosResultExt<i64> for i64 {
-    #[inline]
-    fn cos_ok(self) -> CosResult<i64> {
-        if self >= 0 { Ok(self) } else { Err(self) }
-    }
-}
-
-// ── Struktury ABI ────────────────────────────────────────────────────────────
-#[repr(C)] pub struct SpawnArgs {
-    pub entry:    u64,
-    pub arg:      u64,
-    pub stack_sz: u32,
-    pub flags:    u32,
-    pub name:     [u8; 16],
-}
-pub mod spawn_flags {
-    pub const USER:   u32 = 1 << 0;
-    pub const DETACH: u32 = 1 << 1;
-}
-
-#[repr(C)] pub struct IpcMsg {
-    pub from:  u32, pub to:    u32,
-    pub tag:   u32, pub _pad:  u32,
-    pub data:  [u64; 4],
-    pub ptr:   u64,
-    pub len:   u32, pub _pad2: u32,
-}
-
-impl IpcMsg {
-    pub const fn zeroed() -> Self {
-        Self { from: 0, to: 0, tag: 0, _pad: 0, data: [0; 4], ptr: 0, len: 0, _pad2: 0 }
-    }
-}
-
-#[repr(C)] pub struct MmapArgs {
-    pub hint: u64, pub length: u64,
-    pub prot: u32, pub flags:  u32,
-    pub fd:   i32, pub _pad:   u32,
-    pub offset: u64,
-}
-pub mod mmap_prot  { pub const READ: u32 = 1; pub const WRITE: u32 = 2; pub const EXEC: u32 = 4; }
-pub mod mmap_flags { pub const ANON: u32 = 1; pub const FIXED: u32 = 2; pub const PRIVATE: u32 = 8; }
-
-#[repr(C)] pub struct ThreadInfo { pub tid: u32, pub prio: u8, pub state: u8, pub _pad: [u8; 2] }
-#[repr(C)] pub struct TimeInfo   { pub ticks: u64, pub uptime: u64 }
-#[repr(C)] pub struct PipeFds    { pub read_fd: i32, pub write_fd: i32 }
-#[repr(C)] pub struct StatInfo   { pub size: u64, pub kind: u32, pub _pad: u32 }
-
-pub mod sig {
-    pub const KILL: u32 = 1; pub const TERM: u32 = 2;
-    pub const USR1: u32 = 16; pub const USR2: u32 = 17;
-    pub const MAX:  u32 = 32;
-}
-
-// ── Niskopoziomowe syscalle ───────────────────────────────────────────────────
+// ── Raw syscall wrappers ──────────────────────────────────────────────────────
 #[inline(always)]
 pub unsafe fn syscall0(n: u64) -> i64 {
     let r: i64;
-    core::arch::asm!("int 0x80", inout("rax") n as i64 => r, options(nostack, preserves_flags));
+    core::arch::asm!(
+        "int 0x80",
+        inout("rax") n as i64 => r,
+        options(nostack, preserves_flags)
+    );
     r
 }
+
 #[inline(always)]
 pub unsafe fn syscall1(n: u64, a1: u64) -> i64 {
     let r: i64;
-    core::arch::asm!("int 0x80", inout("rax") n as i64 => r, in("rdi") a1, options(nostack, preserves_flags));
+    core::arch::asm!(
+        "int 0x80",
+        inout("rax") n as i64 => r,
+        in("rdi") a1,
+        options(nostack, preserves_flags)
+    );
     r
 }
+
 #[inline(always)]
 pub unsafe fn syscall2(n: u64, a1: u64, a2: u64) -> i64 {
     let r: i64;
-    core::arch::asm!("int 0x80", inout("rax") n as i64 => r, in("rdi") a1, in("rsi") a2, options(nostack, preserves_flags));
+    core::arch::asm!(
+        "int 0x80",
+        inout("rax") n as i64 => r,
+        in("rdi") a1,
+        in("rsi") a2,
+        options(nostack, preserves_flags)
+    );
     r
 }
+
 #[inline(always)]
 pub unsafe fn syscall3(n: u64, a1: u64, a2: u64, a3: u64) -> i64 {
     let r: i64;
-    core::arch::asm!("int 0x80", inout("rax") n as i64 => r, in("rdi") a1, in("rsi") a2, in("rdx") a3, options(nostack, preserves_flags));
+    core::arch::asm!(
+        "int 0x80",
+        inout("rax") n as i64 => r,
+        in("rdi") a1,
+        in("rsi") a2,
+        in("rdx") a3,
+        options(nostack, preserves_flags)
+    );
     r
 }
 
-// ── I/O ──────────────────────────────────────────────────────────────────────
-pub fn write(fd: u64, s: &str) -> CosResult<usize> {
-    unsafe { syscall3(nr::WRITE, fd, s.as_ptr() as u64, s.len() as u64).cos_ok().map(|n| n as usize) }
-}
-
-pub fn print(s: &str)   { let _ = write(1, s); }
-pub fn println(s: &str) { let _ = write(1, s); let _ = write(1, "\n"); }
-pub fn eprint(s: &str)  { let _ = write(2, s); }
-pub fn eprintln(s: &str){ let _ = write(2, s); let _ = write(2, "\n"); }
-
-pub fn debug(s: &str) {
-    unsafe { syscall3(nr::DEBUG_PRINT, 0, s.as_ptr() as u64, s.len() as u64); }
-}
-
-pub struct Writer;
-impl core::fmt::Write for Writer {
-    fn write_str(&mut self, s: &str) -> core::fmt::Result { print(s); Ok(()) }
-}
-pub struct EWriter;
-impl core::fmt::Write for EWriter {
-    fn write_str(&mut self, s: &str) -> core::fmt::Result { eprint(s); Ok(()) }
-}
-
-#[macro_export] macro_rules! cos_print {
-    ($($a:tt)*) => {{ use core::fmt::Write; let _ = write!($crate::Writer, $($a)*); }};
-}
-#[macro_export] macro_rules! cos_println {
-    ()          => { $crate::print("\n"); };
-    ($($a:tt)*) => {{ use core::fmt::Write; let _ = write!($crate::Writer, $($a)*); $crate::print("\n"); }};
-}
-#[macro_export] macro_rules! cos_eprint  {
-    ($($a:tt)*) => {{ use core::fmt::Write; let _ = write!($crate::EWriter, $($a)*); }};
-}
-#[macro_export] macro_rules! cos_eprintln {
-    ()          => { $crate::eprint("\n"); };
-    ($($a:tt)*) => {{ use core::fmt::Write; let _ = write!($crate::EWriter, $($a)*); $crate::eprint("\n"); }};
-}
-
-// ── Proces ────────────────────────────────────────────────────────────────────
+// ── Process ───────────────────────────────────────────────────────────────────
 pub fn exit(code: i32) -> ! {
     unsafe { syscall1(nr::EXIT, code as u64); }
     loop { unsafe { core::arch::asm!("hlt", options(nostack, nomem)); } }
 }
 
-pub fn sched_yield()           { unsafe { syscall0(nr::YIELD); } }
-pub fn sleep(ticks: u64)       { unsafe { syscall1(nr::SLEEP, ticks); } }
-pub fn sleep_ms(ms: u64)       { sleep((ms * 100).div_ceil(1000)); }
-pub fn sleep_secs(s: u64)      { sleep(s * 100); }
-
-pub fn thread_id() -> u32 { unsafe { syscall1(nr::THREAD_ID, 0) as u32 } }
-
-pub fn thread_info(out: &mut ThreadInfo) -> CosResult<()> {
-    unsafe { syscall1(nr::THREAD_ID, out as *mut ThreadInfo as u64).cos_ok().map(|_| ()) }
+pub fn sched_yield() {
+    unsafe { syscall0(nr::YIELD); }
 }
 
-pub fn set_priority(prio: u8) -> CosResult<()> {
-    unsafe { syscall1(nr::THREAD_SET_PRIO, prio as u64).cos_ok().map(|_| ()) }
+pub fn sleep(ticks: u64) {
+    unsafe { syscall1(nr::SLEEP, ticks); }
 }
 
-pub fn wait(tid: u32) -> CosResult<i64> {
-    unsafe { syscall1(nr::WAIT, tid as u64).cos_ok() }
+pub fn thread_id() -> u32 {
+    unsafe { syscall1(nr::THREAD_ID, 0) as u32 }
 }
 
-pub fn spawn(args: &SpawnArgs) -> CosResult<u32> {
-    unsafe { syscall1(nr::SPAWN, args as *const SpawnArgs as u64).cos_ok().map(|t| t as u32) }
+// ── I/O ───────────────────────────────────────────────────────────────────────
+
+// Write bytes to fd 1 (stdout) or fd 2 (stderr).
+// Kernel validates the pointer via valid_buf before reading it.
+pub fn write(fd: u64, s: &str) -> CosResult<usize> {
+    unsafe {
+        ok(syscall3(nr::WRITE, fd, s.as_ptr() as u64, s.len() as u64))
+            .map(|n| n as usize)
+    }
 }
 
-pub fn spawn_fn(entry: unsafe extern "C" fn(u64) -> !, name: &[u8; 16], arg: u64) -> CosResult<u32> {
-    spawn(&SpawnArgs { entry: entry as u64, arg, stack_sz: 0, flags: spawn_flags::USER, name: *name })
+pub fn print(s: &str)    { let _ = write(1, s); }
+pub fn println(s: &str)  { let _ = write(1, s); let _ = write(1, "\n"); }
+pub fn eprint(s: &str)   { let _ = write(2, s); }
+pub fn eprintln(s: &str) { let _ = write(2, s); let _ = write(2, "\n"); }
+
+// Send a string to kernel serial output (bypasses VGA, always visible).
+// Kernel prefixes with "[US] " automatically.
+pub fn debug(s: &str) {
+    unsafe { syscall3(nr::DEBUG_PRINT, 0, s.as_ptr() as u64, s.len() as u64); }
 }
 
-// ── memory ────────────────────────────────────────────────────────────────────
-pub fn mmap(length: usize, prot: u32) -> *mut u8 {
-    let args = MmapArgs {
-        hint: 0, length: length as u64,
-        prot, flags: mmap_flags::ANON | mmap_flags::PRIVATE,
-        fd: -1, _pad: 0, offset: 0,
-    };
-    let r = unsafe { syscall1(nr::MMAP, &args as *const MmapArgs as u64) };
-    if r < 0 { core::ptr::null_mut() } else { r as *mut u8 }
+// Read up to `buf.len()` bytes from stdin (fd 0).
+// Returns err::AGAIN if no input is available yet.
+pub fn read(buf: &mut [u8]) -> CosResult<usize> {
+    unsafe {
+        ok(syscall3(nr::READ, 0, buf.as_mut_ptr() as u64, buf.len() as u64))
+            .map(|n| n as usize)
+    }
 }
 
-pub fn munmap(ptr: *mut u8, length: usize) -> CosResult<()> {
-    unsafe { syscall2(nr::MUNMAP, ptr as u64, length as u64).cos_ok().map(|_| ()) }
-}
-
-pub fn mprotect(ptr: *mut u8, length: usize, prot: u32) -> CosResult<()> {
-    unsafe { syscall3(nr::MPROTECT, ptr as u64, length as u64, prot as u64).cos_ok().map(|_| ()) }
-}
-
-// ── IPC ──────────────────────────────────────────────────────────────────────
-pub fn ipc_send(msg: &IpcMsg) -> CosResult<()> {
-    unsafe { syscall1(nr::IPC_SEND, msg as *const IpcMsg as u64).cos_ok().map(|_| ()) }
-}
-pub fn ipc_recv(msg: &mut IpcMsg) -> CosResult<()> {
-    unsafe { syscall2(nr::IPC_RECV, msg as *mut IpcMsg as u64, 0).cos_ok().map(|_| ()) }
-}
-pub fn ipc_recv_blocking(msg: &mut IpcMsg) -> CosResult<()> {
-    unsafe { syscall2(nr::IPC_RECV, msg as *mut IpcMsg as u64, 1).cos_ok().map(|_| ()) }
-}
-pub fn ipc_poll() -> usize {
-    unsafe { syscall1(nr::IPC_POLL, 0).max(0) as usize }
-}
-
-// ── time ─────────────────────────────────────────────────────────────────────
-pub fn ticks() -> u64 { unsafe { syscall0(nr::TIME) as u64 } }
-pub fn uptime_secs() -> u64 { ticks() / 100 }
-pub fn time_info(out: &mut TimeInfo) -> CosResult<()> {
-    unsafe { syscall1(nr::TIME, out as *mut TimeInfo as u64).cos_ok().map(|_| ()) }
-}
-
-// ── Stdin ─────────────────────────────────────────────────────────────────────
-pub fn read_stdin(buf: &mut [u8]) -> CosResult<usize> {
-    unsafe { syscall3(nr::READ, 0, buf.as_mut_ptr() as u64, buf.len() as u64)
-        .cos_ok().map(|n| n as usize) }
-}
-
+// Blocking readline — yields until a newline or buffer full.
 pub fn read_line(buf: &mut [u8]) -> usize {
     let mut total = 0usize;
     loop {
         if total >= buf.len() { break; }
-        match read_stdin(&mut buf[total..total + 1]) {
+        match read(&mut buf[total..total + 1]) {
             Err(e) if e == err::AGAIN => { sched_yield(); continue; }
             Err(_) | Ok(0) => break,
             Ok(_) => {
@@ -285,28 +160,172 @@ pub fn read_line(buf: &mut [u8]) -> usize {
     total
 }
 
-// ── Filesystem  ─────────────────────────────────────────────────────────
-pub fn open(path: &str, flags: u32) -> CosResult<i64> {
-    unsafe { syscall3(nr::OPEN, path.as_ptr() as u64, path.len() as u64, flags as u64).cos_ok() }
-}
-pub fn close(fd: i64) -> CosResult<()> {
-    unsafe { syscall1(nr::CLOSE, fd as u64).cos_ok().map(|_| ()) }
-}
-pub fn seek(fd: i64, off: i64, whence: u32) -> CosResult<i64> {
-    unsafe { syscall3(nr::SEEK, fd as u64, off as u64, whence as u64).cos_ok() }
-}
-pub fn getcwd(buf: &mut [u8]) -> CosResult<usize> {
-    unsafe { syscall2(nr::GETCWD, buf.as_mut_ptr() as u64, buf.len() as u64)
-        .cos_ok().map(|n| n as usize) }
-}
-pub fn chdir(path: &str) -> CosResult<()> {
-    unsafe { syscall2(nr::CHDIR, path.as_ptr() as u64, path.len() as u64).cos_ok().map(|_| ()) }
+// ── Memory ────────────────────────────────────────────────────────────────────
+
+// Allocate `pages` contiguous pages at a kernel-chosen address.
+// Returns a pointer to the mapped region, or null on failure.
+// Hint 0 lets the kernel pick the address (starts at 0x10000000).
+pub fn mem_alloc(pages: usize) -> *mut u8 {
+    let r = unsafe { syscall2(nr::MEM_ALLOC, pages as u64, 0) };
+    if r < 0 { core::ptr::null_mut() } else { r as *mut u8 }
 }
 
-// ── Sygnals ───────────────────────────────────────────────────────────────────
-pub fn signal(signum: u32, handler: u64) -> CosResult<()> {
-    unsafe { syscall2(nr::SIGNAL, signum as u64, handler).cos_ok().map(|_| ()) }
+pub fn mem_alloc_at(pages: usize, hint: u64) -> *mut u8 {
+    let r = unsafe { syscall2(nr::MEM_ALLOC, pages as u64, hint) };
+    if r < 0 { core::ptr::null_mut() } else { r as *mut u8 }
 }
-pub fn kill(tid: u32, signum: u32) -> CosResult<()> {
-    unsafe { syscall2(nr::KILL, tid as u64, signum as u64).cos_ok().map(|_| ()) }
+
+pub fn mem_free(ptr: *mut u8, pages: usize) -> CosResult<()> {
+    unsafe { ok(syscall2(nr::MEM_FREE, ptr as u64, pages as u64)).map(|_| ()) }
+}
+
+// ── Spawn ─────────────────────────────────────────────────────────────────────
+#[repr(C)]
+pub struct SpawnArgs {
+    pub entry:    u64,
+    pub arg:      u64,
+    pub stack_sz: u32,
+    pub flags:    u32,
+    pub name:     [u8; 16],
+}
+
+pub mod spawn_flags {
+    pub const USER:   u32 = 1 << 0;
+    pub const DETACH: u32 = 1 << 1;
+}
+
+pub fn spawn(args: &SpawnArgs) -> CosResult<u32> {
+    unsafe { ok(syscall1(nr::SPAWN, args as *const SpawnArgs as u64)).map(|t| t as u32) }
+}
+
+// Convenience: spawn a named user thread.
+pub fn spawn_thread(entry: unsafe extern "C" fn(u64) -> !, name: &[u8; 16], arg: u64) -> CosResult<u32> {
+    spawn(&SpawnArgs {
+        entry: entry as u64,
+        arg,
+        stack_sz: 0,
+        flags: spawn_flags::USER,
+        name: *name,
+    })
+}
+
+// ── IPC ───────────────────────────────────────────────────────────────────────
+#[repr(C)]
+pub struct IpcMsg {
+    pub from:  u32, pub to:   u32,
+    pub tag:   u32, pub _pad: u32,
+    pub data:  [u64; 4],
+    pub ptr:   u64,
+    pub len:   u32, pub _pad2: u32,
+}
+
+impl IpcMsg {
+    pub const fn zeroed() -> Self {
+        Self { from:0, to:0, tag:0, _pad:0, data:[0;4], ptr:0, len:0, _pad2:0 }
+    }
+}
+
+pub fn ipc_send(msg: &IpcMsg) -> CosResult<()> {
+    unsafe { ok(syscall1(nr::IPC_SEND, msg as *const IpcMsg as u64)).map(|_| ()) }
+}
+
+pub fn ipc_recv(msg: &mut IpcMsg) -> CosResult<()> {
+    unsafe { ok(syscall2(nr::IPC_RECV, msg as *mut IpcMsg as u64, 0)).map(|_| ()) }
+}
+
+pub fn ipc_recv_blocking(msg: &mut IpcMsg) -> CosResult<()> {
+    unsafe { ok(syscall2(nr::IPC_RECV, msg as *mut IpcMsg as u64, 1)).map(|_| ()) }
+}
+
+pub fn ipc_poll() -> usize {
+    unsafe { syscall1(nr::IPC_POLL, 0).max(0) as usize }
+}
+
+// ── Time ──────────────────────────────────────────────────────────────────────
+#[repr(C)]
+pub struct TimeInfo { pub ticks: u64, pub uptime: u64 }
+
+pub fn ticks() -> u64 {
+    unsafe { syscall0(nr::TIME) as u64 }
+}
+
+// ── Thread info ───────────────────────────────────────────────────────────────
+#[repr(C)]
+pub struct ThreadInfo { pub tid: u32, pub prio: u8, pub _pad: [u8; 3] }
+
+// ── fmt::Write bridge for print! style macros ─────────────────────────────────
+pub struct Stdout;
+pub struct Stderr;
+pub struct Serial;
+
+impl core::fmt::Write for Stdout {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result { print(s); Ok(()) }
+}
+impl core::fmt::Write for Stderr {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result { eprint(s); Ok(()) }
+}
+impl core::fmt::Write for Serial {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result { debug(s); Ok(()) }
+}
+
+#[macro_export] macro_rules! cos_print {
+    ($($a:tt)*) => {{ use core::fmt::Write; let _ = write!($crate::Stdout, $($a)*); }};
+}
+#[macro_export] macro_rules! cos_println {
+    ()          => { $crate::print("\n"); };
+    ($($a:tt)*) => {{ use core::fmt::Write; let _ = writeln!($crate::Stdout, $($a)*); }};
+}
+#[macro_export] macro_rules! cos_eprint {
+    ($($a:tt)*) => {{ use core::fmt::Write; let _ = write!($crate::Stderr, $($a)*); }};
+}
+#[macro_export] macro_rules! cos_eprintln {
+    ()          => { $crate::eprint("\n"); };
+    ($($a:tt)*) => {{ use core::fmt::Write; let _ = writeln!($crate::Stderr, $($a)*); }};
+}
+#[macro_export] macro_rules! cos_dbg {
+    ($($a:tt)*) => {{ use core::fmt::Write; let _ = write!($crate::Serial, $($a)*); }};
+}
+
+// ── Panic handler ─────────────────────────────────────────────────────────────
+#[panic_handler]
+fn panic(info: &core::panic::PanicInfo) -> ! {
+    // Best-effort: try to print location, then exit.
+    // Can't allocate here so use a fixed stack buffer.
+    let mut buf = [0u8; 256];
+    let mut pos = 0usize;
+
+    let push = |buf: &mut [u8; 256], pos: &mut usize, s: &str| {
+        for &b in s.as_bytes() {
+            if *pos >= buf.len() { break; }
+            buf[*pos] = b;
+            *pos += 1;
+        }
+    };
+
+    push(&mut buf, &mut pos, "\n[PANIC]");
+    if let Some(loc) = info.location() {
+        push(&mut buf, &mut pos, " ");
+        push(&mut buf, &mut pos, loc.file());
+        push(&mut buf, &mut pos, ":");
+        // Encode line number manually (no alloc)
+        let line = loc.line();
+        let mut tmp = [0u8; 10];
+        let mut i = 10usize;
+        let mut n = line;
+        if n == 0 { i -= 1; tmp[i] = b'0'; } else {
+            while n > 0 { i -= 1; tmp[i] = b'0' + (n % 10) as u8; n /= 10; }
+        }
+        push(&mut buf, &mut pos, core::str::from_utf8(&tmp[i..]).unwrap_or("?"));
+    }
+    if let Some(msg) = info.message().as_str() {
+        push(&mut buf, &mut pos, " — ");
+        push(&mut buf, &mut pos, msg);
+    }
+    push(&mut buf, &mut pos, "\n");
+
+    if let Ok(s) = core::str::from_utf8(&buf[..pos]) {
+        eprint(s);
+    }
+
+    exit(101)
 }
