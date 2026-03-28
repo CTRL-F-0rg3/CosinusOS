@@ -1,6 +1,21 @@
-[package]
-name = "GUI"
-version = "0.1.0"
-edition = "2024"
+[workspace]
+resolver = "2"
 
-[dependencies]
+members = [
+    # GUI
+    "gui/api",
+    "gui/controller",
+    "gui/definition",
+    "gui/gui",
+    "gui/render_balancer",
+    "gui/render_core",
+
+    # Compositor
+    "compositor/compositor",
+    "compositor/compositor_core",
+
+    # Drivers
+    "drivers/amd_driver",
+    "drivers/intel_driver"
+]
+
