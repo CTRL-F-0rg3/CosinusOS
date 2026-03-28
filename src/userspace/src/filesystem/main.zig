@@ -137,16 +137,14 @@ inline fn syscall2(num: u64, a0: u64, a1: u64) u64 {
         : [num] "{rax}" (num),
           [a0] "{rdi}" (a0),
           [a1] "{rsi}" (a1),
-        : .{ .memory = true, .rcx = true, .r11 = true }
-    );
+        : .{ .memory = true, .rcx = true, .r11 = true });
 }
 
 inline fn syscall0(num: u64) u64 {
     return asm volatile ("int $0x80"
         : [ret] "={rax}" (-> u64),
         : [num] "{rax}" (num),
-        : .{ .memory = true, .rcx = true, .r11 = true }
-    );
+        : .{ .memory = true, .rcx = true, .r11 = true });
 }
 
 // ─── Request dispatch ─────────────────────────────────────────────────────────
