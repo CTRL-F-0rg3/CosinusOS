@@ -50,7 +50,6 @@ pub unsafe fn load_userspace(mod_start: u64, mod_end: u64) -> bool {
 unsafe fn load_flat(src: *const u8, size: usize) -> bool {
     printc("[US] Raw binary\n", col::LCYAN);
 
-    // new_user_p4() already gives a clean lower half — no extra zeroing needed
     let cr3 = new_user_p4();
 
     const BIN_BASE: u64 = 0x0040_0000;

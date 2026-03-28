@@ -39,7 +39,7 @@ unsafe fn mark_free(i: usize) {
 pub unsafe fn mm_init(base: PhysAddr, size: usize) {
     MEM_BASE = base;
     MEM_SIZE = size;
-    core::ptr::write_bytes(&raw mut FRAME_BM as *mut u8, 0, core::mem::size_of_val(&FRAME_BM));
+    core::ptr::write_bytes(&raw mut FRAME_BM as *mut u8, 0, core::mem::size_of_val(&raw const FRAME_BM));
     mark_used(0);
     HINT = 0;
     serial_print("[PMM] ");
@@ -250,15 +250,16 @@ pub unsafe fn valid_buf(p4: PhysAddr, ptr: VirtAddr, len: usize) -> bool {
     true
 }
 
-// Allocate a new P4 that shares kernel mappings (upper half, entries 256–511).
-// Lower half (entries 0–255) is zeroed — userspace fills it via vmap.
+// Allocate a new P4 that shares ALL kernel mappings (full copy of K_P4).
+// Kernel lives in identity-mapped lower half — clearing p4[0..256] would
+// destroy the kernel's own code/stack/IDT mappings and cause a triple fault
+// on the first interrupt after CR3 switch. Userspace pages are added on top
+// via vmap and sit at different addresses (0x400000, 0x7C00000, etc.).
 pub unsafe fn new_user_p4() -> PhysAddr {
     let n   = zpg_locked();
     let src = &*pt_ptr(K_P4);
     let dst = &mut *pt_ptr(n);
-    // Share only upper half (kernel virtual space)
-    for i in 0..256   { dst.e[i] = 0;         }
-    for i in 256..512 { dst.e[i] = src.e[i];  }
+    for i in 0..512 { dst.e[i] = src.e[i]; }
     n
 }
 
