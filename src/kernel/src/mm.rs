@@ -39,7 +39,7 @@ unsafe fn mark_free(i: usize) {
 pub unsafe fn mm_init(base: PhysAddr, size: usize) {
     MEM_BASE = base;
     MEM_SIZE = size;
-    core::ptr::write_bytes(&raw mut FRAME_BM as *mut u8, 0, core::mem::size_of_val(&raw const FRAME_BM));
+    core::ptr::write_bytes(&raw mut FRAME_BM as *mut u8, 0, core::mem::size_of_val(&FRAME_BM));
     mark_used(0);
     HINT = 0;
     serial_print("[PMM] ");

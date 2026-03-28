@@ -524,7 +524,7 @@ unsafe fn build_intr_qh(addr: u8, ep: u8, mps: u16, speed: u8, qtd: u64) -> u64 
 // ════════════════════════════════════════════════════════════════════════════
 
 pub unsafe fn ehci_poll_all() {
-    let e = match &raw mut EHCI { Some(x)=>x, None=>return };
+    let e = match &mut EHCI { Some(x)=>x, None=>return };
 
     for pi in 0..e.n_ports.min(MAX_EHCI_PORTS as u8) as usize {
         if !e.ports[pi].active { continue; }
@@ -571,7 +571,7 @@ unsafe fn ehci_restart_intr(e: &mut Ehci, pi: usize) {
 // ════════════════════════════════════════════════════════════════════════════
 
 pub unsafe fn ehci_hotplug() {
-    let e = match &raw mut EHCI { Some(x)=>x, None=>return };
+    let e = match &mut EHCI { Some(x)=>x, None=>return };
 
     for pi in 0..e.n_ports.min(MAX_EHCI_PORTS as u8) as usize {
         let poff = EHCI_PORTSC + pi * 4;
@@ -980,7 +980,7 @@ unsafe fn ohci_probe_port(o: &mut Ohci, pi: usize) {
 }
 
 pub unsafe fn ohci_poll_all() {
-    let o = match &raw mut OHCI { Some(x)=>x, None=>return };
+    let o = match &mut OHCI { Some(x)=>x, None=>return };
 
     for pi in 0..o.n_ports.min(MAX_OHCI_PORTS as u8) as usize {
         if !o.ports[pi].active { continue; }
@@ -1019,7 +1019,7 @@ pub unsafe fn ohci_poll_all() {
 }
 
 pub unsafe fn ohci_hotplug() {
-    let o = match &raw mut OHCI { Some(x)=>x, None=>return };
+    let o = match &mut OHCI { Some(x)=>x, None=>return };
 
     for pi in 0..o.n_ports.min(MAX_OHCI_PORTS as u8) as usize {
         let poff = OHCI_RH_PORT + pi * 4;

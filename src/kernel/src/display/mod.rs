@@ -203,7 +203,7 @@ pub fn display_ok() -> bool { DISP_READY.load(Ordering::Relaxed) }
 
 /// Hotplug check — wywołaj co kilka sekund z wątku kernelowego
 pub unsafe fn display_hotplug() {
-    match &raw mut GPU {
+    match &mut GPU {
         Some(ActiveGpu::Amd(s))   => amd_hotplug(s),
         Some(ActiveGpu::Intel(s)) => intel_hotplug(s),
         None => {}

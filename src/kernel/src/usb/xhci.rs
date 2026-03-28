@@ -467,7 +467,7 @@ unsafe fn xhci_queue_in(x: &mut Xhci, slot: usize, len: u32) {
 // ════════════════════════════════════════════════════════════════════════════
 
 pub unsafe fn xhci_probe_all() {
-    if let Some(x) = &raw mut XHCI {
+    if let Some(x) = &mut XHCI {
         let nports = x.max_ports;
         for port in 0..nports as usize {
             xhci_enumerate_port(x, port);
@@ -480,7 +480,7 @@ pub unsafe fn xhci_probe_all() {
 // ════════════════════════════════════════════════════════════════════════════
 
 pub unsafe fn xhci_poll_all() {
-    let x = match &raw mut XHCI { Some(x)=>x, None=>return };
+    let x = match &mut XHCI { Some(x)=>x, None=>return };
 
     while let Some(evt) = x.evt.pop() {
         xhci_erdp_update(x);
@@ -518,7 +518,7 @@ pub unsafe fn xhci_poll_all() {
 // ════════════════════════════════════════════════════════════════════════════
 
 pub unsafe fn xhci_hotplug() {
-    let x = match &raw mut XHCI { Some(x)=>x, None=>return };
+    let x = match &mut XHCI { Some(x)=>x, None=>return };
     let nports = x.max_ports as usize;
 
     for port in 0..nports.min(64) {
