@@ -48,12 +48,10 @@ use libcosinus::{
 
 #[allow(dead_code)]
 mod fs_ipc {
-    // IpcMsg.tag values
     pub const TAG_FS_REQUEST:  u32 = 0x4653_0001;
     pub const TAG_FS_RESPONSE: u32 = 0x4653_0002;
     pub const TAG_FS_READY:    u32 = 0x4653_00FF;
 
-    // Opcodes carried in IpcMsg.data[0]
     pub const OP_OPEN:    u64 = 1;
     pub const OP_READ:    u64 = 2;
     pub const OP_WRITE:   u64 = 3;
@@ -61,17 +59,15 @@ mod fs_ipc {
     pub const OP_READDIR: u64 = 5;
     pub const OP_STAT:    u64 = 6;
 
-    // Error codes returned in IpcMsg.data[0] on response
     pub const ERR_OK:       i64 =  0;
     pub const ERR_NOTFOUND: i64 = -1;
     pub const ERR_IO:       i64 = -4;
     pub const ERR_BADFD:    i64 = -6;
 
-    // Shared memory layout (must match Zig FS server)
     pub const SHM_BASE:      usize = 0x0000_7000_0000_0000;
     pub const SHM_PATH_OFF:  usize = 0x1000;
     pub const SHM_DATA_OFF:  usize = 0x2000;
-    pub const SHM_DATA_SIZE: usize = 0x10000; // 64 KB transfer window
+    pub const SHM_DATA_SIZE: usize = 0x10000;
     pub const SHM_PAGES:     usize = (SHM_DATA_OFF + SHM_DATA_SIZE) / 0x1000 + 1;
 }
 
@@ -117,7 +113,7 @@ fn wait_fs_ready(fs_tid: u32) -> bool {
                 cos_dbg!("[init] FS server ready (TID {})\n", fs_tid);
                 return true;
             }
-            Ok(()) => sched_yield(), // unrelated message — yield and retry
+            Ok(()) => sched_yield(),
             Err(e) if e == err::AGAIN => sleep(10),
             Err(_) => sched_yield(),
         }
@@ -192,7 +188,7 @@ impl FsHandle {
         req.tag     = fs_ipc::TAG_FS_REQUEST;
         req.data[0] = fs_ipc::OP_CLOSE;
         req.data[1] = self.fd as u64;
-        let _ = ipc_send(&req); // fire-and-forget
+        let _ = ipc_send(&req);
     }
 
     pub fn size(&self) -> u64 { self.size }
@@ -234,13 +230,12 @@ struct ChildProc {
     name:     [u8; 16],
     entry:    u64,
     arg:      u64,
-    critical: bool, // restart on crash
+    critical: bool,
     alive:    bool,
 }
 
 const MAX_CHILDREN: usize = 16;
 
-// Use a raw static array — no heap needed for the supervisor table itself
 static mut CHILDREN: [Option<ChildProc>; MAX_CHILDREN] = [
     None, None, None, None, None, None, None, None,
     None, None, None, None, None, None, None, None,
@@ -248,11 +243,10 @@ static mut CHILDREN: [Option<ChildProc>; MAX_CHILDREN] = [
 
 fn add_child(child: ChildProc) {
     unsafe {
-        for slot in &raw mut CHILDREN {
-            // SAFETY: single-threaded init process, no concurrent access
-            let slot = &mut *slot;
-            for s in slot.iter_mut() {
-                if s.is_none() { *s = Some(child); return; }
+        for slot in CHILDREN.iter_mut() {
+            if slot.is_none() {
+                *slot = Some(child);
+                return;
             }
         }
     }
@@ -272,11 +266,8 @@ fn supervisor_loop() -> ! {
                 let dead_tid = msg.data[0] as u32;
                 cos_dbg!("[init] child exit TID={}\n", dead_tid);
                 unsafe {
-                    // SAFETY: single-threaded
-                    for s in (&raw mut CHILDREN as *mut [Option<ChildProc>; MAX_CHILDREN])
-                        .as_mut().unwrap().iter_mut()
-                    {
-                        if let Some(ref mut c) = s {
+                    for slot in CHILDREN.iter_mut() {
+                        if let Some(ref mut c) = slot {
                             if c.tid == dead_tid { c.alive = false; }
                         }
                     }
@@ -287,12 +278,9 @@ fn supervisor_loop() -> ! {
             Err(_) => sched_yield(),
         }
 
-        // Restart critical dead children
         unsafe {
-            for s in (&raw mut CHILDREN as *mut [Option<ChildProc>; MAX_CHILDREN])
-                .as_mut().unwrap().iter_mut()
-            {
-                let Some(ref mut child) = s else { continue };
+            for slot in CHILDREN.iter_mut() {
+                let Some(ref mut child) = slot else { continue };
                 if child.alive || !child.critical { continue; }
                 cos_dbg!("[init] restarting critical process\n");
                 let args = SpawnArgs {
@@ -356,7 +344,6 @@ fn spawn_named(name: &[u8]) {
     let name = trim(name);
     cos_dbg!("[init] spawning: {}\n", core::str::from_utf8(name).unwrap_or("?"));
 
-    // Build /bin/<name> path on the stack
     let mut path = [0u8; 64];
     path[0] = b'/'; path[1] = b'b'; path[2] = b'i'; path[3] = b'n'; path[4] = b'/';
     let nlen = name.len().min(58);
@@ -365,7 +352,6 @@ fn spawn_named(name: &[u8]) {
     match fs_stat(&path[..5 + nlen]) {
         Some(s) if s.ftype == 1 => {
             cos_dbg!("[init] found, size={}\n", s.size);
-            // TODO: sys_exec once kernel ELF loader is ready
         }
         Some(_) => cos_dbg!("[init] not a regular file\n"),
         None    => cos_dbg!("[init] not found: /bin/{}\n",
@@ -390,8 +376,6 @@ fn run_mount_check() {
 }
 
 // ─── Entry point ──────────────────────────────────────────────────────────────
-//
-// _arg = FS server PID, passed by kernel before jumping to init
 
 #[no_mangle]
 pub extern "C" fn _start(arg: u64) -> ! {
@@ -399,20 +383,16 @@ pub extern "C" fn _start(arg: u64) -> ! {
     cos_dbg!("[init] started TID={} fs_pid={}\n", my_tid, arg);
     cos_println!("CosinusOS init");
 
-    // Kernel passes FS server PID in arg
     unsafe { FS_SERVER_PID = arg as u32; }
 
-    // Allocate shared memory window for FS IPC
     if !setup_shm() { libcosinus::exit(1); }
 
-    // Wait for FS server to signal readiness
     if !wait_fs_ready(arg as u32) {
         cos_dbg!("[init] FATAL: FS server not ready\n");
         libcosinus::exit(1);
     }
     cos_println!("FS ready.");
 
-    // Read and execute /etc/init.conf
     match read_init_conf() {
         Some(conf) => parse_and_exec_conf(&conf),
         None => {
