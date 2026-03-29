@@ -10,6 +10,7 @@ target/* linguist-vendored
 *.elf linguist-generated
 *.a linguist-generated
 
+*.fs linguist-language=Forth
 # Documentation
 *.md linguist-documentation
 
