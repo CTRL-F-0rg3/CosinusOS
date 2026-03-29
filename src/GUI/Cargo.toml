@@ -14,8 +14,6 @@ members = [
     "compositor/compositor",
     "compositor/compositor_core",
 
-    # Drivers
-    "drivers/amd_driver",
-    "drivers/intel_driver"
+
 ]
 
