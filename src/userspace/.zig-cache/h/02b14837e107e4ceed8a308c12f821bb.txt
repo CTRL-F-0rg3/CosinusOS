@@ -833,8 +833,8 @@
 24293 9150476 1760154801000000000 0c7d3ee9ea8e698a843ee6039fd161c4 1 std/os/linux/bpf/helpers.zig
 3221 9150223 1760154801000000000 fda67b74062c7f535bb0a6d0f1fe74fb 1 std/crypto/codecs/asn1/der/ArrayListReverse.zig
 10245 10406565 1774725376620505347 ed3be4556f8fea17bbd216098c6c5b70 0 /home/ctrl/Dokumenty/CosinusOS_/src/userspace/src/filesystem/main.zig
-1070 10406580 1774718627130191691 093b2a361ae91f108107e0fe2bd6260a 0 /home/ctrl/Dokumenty/CosinusOS_/src/userspace/src/filesystem/block.zig
-8519 10406582 1774721694815376210 68dfee804a502b9911876310dad49423 0 /home/ctrl/Dokumenty/CosinusOS_/src/userspace/src/filesystem/cache.zig
+5268 10406580 1774777344636041787 90f81399edec63406843169b4efd4692 0 /home/ctrl/Dokumenty/CosinusOS_/src/userspace/src/filesystem/block.zig
+6094 10406582 1774777191168402964 ff07e3293297a5aa9c963bef2272d30f 0 /home/ctrl/Dokumenty/CosinusOS_/src/userspace/src/filesystem/cache.zig
 23686 10406570 1774721984504192092 1d58d5ed58a784e5af0c398d2317db44 0 /home/ctrl/Dokumenty/CosinusOS_/src/userspace/src/filesystem/fs.zig
 5383 10406572 1774721683738633745 590e866959aab1cbf9cc977dd0cd927b 0 /home/ctrl/Dokumenty/CosinusOS_/src/userspace/src/filesystem/inode.zig
 5850 10406591 1774721745772398592 2ec67935ccce44f2fafb2ea3ee774478 0 /home/ctrl/Dokumenty/CosinusOS_/src/userspace/src/filesystem/utils.zig

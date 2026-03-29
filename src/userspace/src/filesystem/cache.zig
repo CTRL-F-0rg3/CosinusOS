@@ -1,41 +1,41 @@
 // cache.zig — LRU block cache
 //
-// MMIO reads są drogie — trzymamy N ostatnio używanych bloków w pamięci.
-// Implementacja: fixed-size array + doubly-linked list (bez alokacji).
-//
-// Cache line = jeden sektor dysku (block_size bajtów, typowo 512).
-// Rozmiar cache: CACHE_LINES * block_size bajtów.
+// Sits between fs.zig and block.zig.
+// All hardware access goes through BlockDevice.readSectors / writeSectors
+// which call into the Odin ATA driver — no direct MMIO here.
 
-const std = @import("std");
 const block = @import("block.zig");
 
-// ─── Stałe ────────────────────────────────────────────────────────────────────
-
-pub const CACHE_LINES: usize = 256; // 256 * 512 = 128 KB
+pub const CACHE_LINES: usize = 256; // 256 * 512 = 128 KB resident
 pub const BLOCK_SIZE: usize = 512;
 
-// ─── CacheLine ───────────────────────────────────────────────────────────────
+// ── CacheLine ─────────────────────────────────────────────────────────────────
+
+const INVALID_IDX: u16 = 0xFFFF;
 
 const CacheLine = struct {
     lba: u64,
     dirty: bool,
     valid: bool,
     data: [BLOCK_SIZE]u8,
-    prev: u16, // index w tablicy (CACHE_LINES = invalid sentinel)
+    prev: u16,
     next: u16,
 };
 
-const INVALID_IDX: u16 = 0xFFFF;
+// ── BlockCache ────────────────────────────────────────────────────────────────
 
-// ─── BlockCache ──────────────────────────────────────────────────────────────
+pub const CacheError = error{
+    ReadFailed,
+    WriteFailed,
+};
 
 pub const BlockCache = struct {
     lines: [CACHE_LINES]CacheLine,
-    // LRU linked list — head = most recently used
     lru_head: u16,
     lru_tail: u16,
-    // lookup: lba → line index (linear scan, wystarczy dla 256 linii)
     dev: block.BlockDevice,
+    hits: u64, // stats
+    misses: u64,
 
     pub fn init(dev: block.BlockDevice) BlockCache {
         var c = BlockCache{
@@ -43,6 +43,8 @@ pub const BlockCache = struct {
             .lru_head = INVALID_IDX,
             .lru_tail = INVALID_IDX,
             .dev = dev,
+            .hits = 0,
+            .misses = 0,
         };
         for (&c.lines, 0..) |*l, i| {
             l.* = .{
@@ -54,13 +56,12 @@ pub const BlockCache = struct {
                 .next = if (i == CACHE_LINES - 1) INVALID_IDX else @intCast(i + 1),
             };
         }
-        // Zbuduj initial LRU list (0 = MRU, CACHE_LINES-1 = LRU)
         c.lru_head = 0;
         c.lru_tail = CACHE_LINES - 1;
         return c;
     }
 
-    // ── Lookup ──────────────────────────────────────────────────────────────
+    // ── LRU list ──────────────────────────────────────────────────────────────
 
     fn findLine(self: *BlockCache, lba: u64) ?u16 {
         for (&self.lines, 0..) |*l, i| {
@@ -68,8 +69,6 @@ pub const BlockCache = struct {
         }
         return null;
     }
-
-    // ── LRU list ops ────────────────────────────────────────────────────────
 
     fn detach(self: *BlockCache, idx: u16) void {
         const l = &self.lines[idx];
@@ -96,13 +95,10 @@ pub const BlockCache = struct {
         self.pushFront(idx);
     }
 
-    // ── Evict LRU ────────────────────────────────────────────────────────────
-
-    fn evict(self: *BlockCache) u16 {
+    fn evict(self: *BlockCache) CacheError!u16 {
         const idx = self.lru_tail;
-        // jeśli dirty — writeback przed eviction
         if (self.lines[idx].dirty) {
-            self.writebackLine(idx) catch {};
+            try self.writebackLine(idx);
         }
         self.lines[idx].valid = false;
         self.lines[idx].dirty = false;
@@ -110,90 +106,51 @@ pub const BlockCache = struct {
         return idx;
     }
 
-    // ── MMIO read/write ──────────────────────────────────────────────────────
-    // Prawdziwy odczyt przez MMIO — zapisujemy lba i czekamy na DMA done.
-    // W CosinusOS userspace: to będzie syscall do sterownika dysku,
-    // tutaj mamy bezpośredni dostęp (FS server działa ring-0 lub ma mapping).
+    // ── Physical I/O — goes through block.zig → Odin driver ──────────────────
 
-    fn mmioRead(self: *BlockCache, lba: u64, buf: []u8) void {
-        const base: usize = self.dev.info.mmio_base;
-        // Protokół: zapisz LBA do rejestru cmd, poczekaj na status
-        const cmd_reg: *volatile u64 = @ptrFromInt(base + 0x00);
-        const status_reg: *volatile u32 = @ptrFromInt(base + 0x08);
-        const data_reg: *volatile u8 = @ptrFromInt(base + 0x10);
-
-        cmd_reg.* = lba | (0 << 48); // bit48=0: read
-
-        // Busy wait — w docelowej wersji zastąpić IRQ/event
-        var timeout: u32 = 1_000_000;
-        while (status_reg.* == 0 and timeout > 0) : (timeout -= 1) {
-            asm volatile ("pause" ::: .{ .memory = true });
-        }
-
-        // Kopiuj dane z MMIO data window
-        const window: [*]volatile u8 = @ptrCast(data_reg);
-        for (buf, 0..) |*b, i| b.* = window[i];
-    }
-
-    fn mmioWrite(self: *BlockCache, lba: u64, buf: []const u8) void {
-        const base: usize = self.dev.info.mmio_base;
-        const cmd_reg: *volatile u64 = @ptrFromInt(base + 0x00);
-        const status_reg: *volatile u32 = @ptrFromInt(base + 0x08);
-        const data_reg: *volatile u8 = @ptrFromInt(base + 0x10);
-
-        const window: [*]volatile u8 = @ptrCast(data_reg);
-        for (buf, 0..) |b, i| window[i] = b;
-
-        cmd_reg.* = lba | (@as(u64, 1) << 48); // bit48=1: write
-
-        var timeout: u32 = 1_000_000;
-        while (status_reg.* == 0 and timeout > 0) : (timeout -= 1) {
-            asm volatile ("pause" ::: .{ .memory = true });
-        }
-    }
-
-    fn writebackLine(self: *BlockCache, idx: u16) !void {
+    fn writebackLine(self: *BlockCache, idx: u16) CacheError!void {
         const l = &self.lines[idx];
-        self.mmioWrite(l.lba, &l.data);
+        self.dev.writeSector(l.lba, &l.data) catch return CacheError.WriteFailed;
         l.dirty = false;
     }
 
-    // ── Publiczne API ────────────────────────────────────────────────────────
+    // ── Public API ────────────────────────────────────────────────────────────
 
-    pub const CacheError = error{
-        ReadFailed,
-        WriteFailed,
-    };
-
-    /// Zwróć wskaźnik do danych bloku (read-only).
+    /// Returns read-only pointer to cached sector data.
     pub fn readBlock(self: *BlockCache, lba: u64) CacheError!*const [BLOCK_SIZE]u8 {
         if (self.findLine(lba)) |idx| {
             self.promoteToFront(idx);
+            self.hits += 1;
             return &self.lines[idx].data;
         }
-        // Cache miss — evict + load
-        const idx = self.evict();
+
+        self.misses += 1;
+        const idx = try self.evict();
         const l = &self.lines[idx];
         l.lba = lba;
         l.valid = true;
         l.dirty = false;
-        self.mmioRead(lba, &l.data);
+
+        self.dev.readSector(lba, &l.data) catch return CacheError.ReadFailed;
+
         self.pushFront(idx);
         return &l.data;
     }
 
-    /// Zwróć mutable slice do bloku — caller musi wywołać markDirty().
+    /// Returns mutable pointer to cached sector; caller must call markDirty().
     pub fn getWritable(self: *BlockCache, lba: u64) CacheError!*[BLOCK_SIZE]u8 {
         if (self.findLine(lba)) |idx| {
             self.promoteToFront(idx);
             return &self.lines[idx].data;
         }
-        const idx = self.evict();
+        const idx = try self.evict();
         const l = &self.lines[idx];
         l.lba = lba;
         l.valid = true;
         l.dirty = false;
-        self.mmioRead(lba, &l.data);
+
+        self.dev.readSector(lba, &l.data) catch return CacheError.ReadFailed;
+
         self.pushFront(idx);
         return &l.data;
     }
@@ -204,7 +161,7 @@ pub const BlockCache = struct {
         }
     }
 
-    /// Flush wszystkich dirty bloków na dysk.
+    /// Flush all dirty sectors to disk via block.zig.
     pub fn flushAll(self: *BlockCache) void {
         for (&self.lines, 0..) |*l, i| {
             if (l.valid and l.dirty) {
@@ -213,11 +170,17 @@ pub const BlockCache = struct {
         }
     }
 
-    /// Invalidate (wyrzuć z cache bez writeback) — np. po unmount.
     pub fn invalidateAll(self: *BlockCache) void {
         for (&self.lines) |*l| {
             l.valid = false;
             l.dirty = false;
         }
+    }
+
+    /// Cache hit rate as integer percentage (0–100).
+    pub fn hitRate(self: *const BlockCache) u64 {
+        const total = self.hits + self.misses;
+        if (total == 0) return 0;
+        return self.hits * 100 / total;
     }
 };

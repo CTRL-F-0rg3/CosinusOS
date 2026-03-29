@@ -259,7 +259,12 @@ pub unsafe fn new_user_p4() -> PhysAddr {
     let n   = zpg_locked();
     let src = &*pt_ptr(K_P4);
     let dst = &mut *pt_ptr(n);
-    for i in 0..512 { dst.e[i] = src.e[i]; }
+    // Copy only upper 256 entries (kernel half: 0xFFFF800000000000+).
+    // Lower 256 = userspace virtual address space — start clean so no
+    // kernel mappings (without PTE_U) leak into the user page table.
+    // vmap() will build [0..256] fresh with PTE_U on every level.
+    for i in 0..256   { dst.e[i] = 0; }
+    for i in 256..512 { dst.e[i] = src.e[i]; }
     n
 }
 
