@@ -1,75 +1,286 @@
-// mod.rs - Główny moduł sterownika dysku ATA
-use crate::api::{DiskRequest, DiskResponse, DiskRequestType};
+// mod.rs — DevSpace ATA driver main module
+//
+// Runs in Ring-1. Owns the ForthVM, handles IPC from Ring-3, calls
+// critical ASM transfers for actual PIO sector moves.
 
-// Importy funkcji z critical.asm
+use crate::api::{
+    DiskRequest, DiskRequestType, DiskResponse,
+    ERR_READ, ERR_WRITE, ERR_IDENTIFY, ERR_FLUSH, ERR_UNSUPPORTED,
+    DEVSPACE_IPC_BASE, DEVSPACE_IPC_SIZE, IpcRing,
+};
+
+// ── FFI — critical ASM (crytic.asm) ──────────────────────────────────────────
+
 extern "C" {
+    /// Read 256 words (512 bytes) from `port` into `buf`.
     fn transfer_sector_in(buf: *mut u8, port: u16);
+    /// Write 256 words (512 bytes) from `buf` to `port`.
     fn transfer_sector_out(buf: *const u8, port: u16);
+    /// 400ns delay via four alt-status reads.
     fn delay_400ns();
 }
 
+// ── ATA port addresses ────────────────────────────────────────────────────────
+
+const ATA_DATA:      u16 = 0x1F0;
+const ATA_ERROR:     u16 = 0x1F1;
+const ATA_SEC_COUNT: u16 = 0x1F2;
+const ATA_LBA_LO:    u16 = 0x1F3;
+const ATA_LBA_MID:   u16 = 0x1F4;
+const ATA_LBA_HI:    u16 = 0x1F5;
+const ATA_DRIVE_SEL: u16 = 0x1F6;
+const ATA_CMD:       u16 = 0x1F7;
+const ATA_STATUS:    u16 = 0x1F7;
+const ATA_ALT_CTRL:  u16 = 0x3F6;
+
+const CMD_READ_PIO:   u8 = 0x20;
+const CMD_WRITE_PIO:  u8 = 0x30;
+const CMD_IDENTIFY:   u8 = 0xEC;
+const CMD_FLUSH:      u8 = 0xE7;
+
+const SR_BSY:  u8 = 0x80;
+const SR_DRQ:  u8 = 0x08;
+const SR_ERR:  u8 = 0x01;
+
+const POLL_TIMEOUT: u32 = 1_000_000;
+
+// ── Port I/O (Ring-1 has IOPL≥1, IN/OUT are permitted) ───────────────────────
+
+#[inline(always)]
+unsafe fn inb(port: u16) -> u8 {
+    let val: u8;
+    core::arch::asm!("in al, dx", out("al") val, in("dx") port, options(nostack, nomem));
+    val
+}
+
+#[inline(always)]
+unsafe fn outb(port: u16, val: u8) {
+    core::arch::asm!("out dx, al", in("dx") port, in("al") val, options(nostack, nomem));
+}
+
+// ── Poll helpers ─────────────────────────────────────────────────────────────
+
+unsafe fn poll_bsy() -> bool {
+    for _ in 0..POLL_TIMEOUT {
+        let s = inb(ATA_STATUS);
+        if s & SR_BSY == 0 {
+            return s & SR_ERR == 0;
+        }
+    }
+    false // timeout
+}
+
+unsafe fn poll_drq() -> bool {
+    for _ in 0..POLL_TIMEOUT {
+        let s = inb(ATA_STATUS);
+        if s & SR_BSY != 0 { continue; }
+        if s & SR_ERR != 0 { return false; }
+        if s & SR_DRQ != 0 { return true; }
+    }
+    false
+}
+
+// ── LBA28 register setup ──────────────────────────────────────────────────────
+
+unsafe fn setup_lba28(lba: u64, drive: u8, count: u8) {
+    let drv_bits: u8 = if drive == 0 { 0xE0 } else { 0xF0 };
+    let head_bits = ((lba >> 24) & 0x0F) as u8;
+    outb(ATA_DRIVE_SEL, drv_bits | head_bits);
+    delay_400ns();
+    outb(ATA_SEC_COUNT, count);
+    outb(ATA_LBA_LO,  (lba & 0xFF) as u8);
+    outb(ATA_LBA_MID, ((lba >> 8) & 0xFF) as u8);
+    outb(ATA_LBA_HI,  ((lba >> 16) & 0xFF) as u8);
+}
+
+// ── AtaDriver ────────────────────────────────────────────────────────────────
+
 pub struct AtaDriver {
-    pub active_drive: u8, // 0 = Master, 1 = Slave
-    pub forth_vm: ForthVM, // Twoja instancja maszyny Forth
+    pub active_drive: u8,
+    identify_buf: [u8; 512],
+    lba28_total: u32,
 }
 
 impl AtaDriver {
     pub fn new() -> Self {
-        let mut driver = Self {
+        Self {
             active_drive: 0,
-            forth_vm: ForthVM::init(), 
-        };
-        // Ładowanie drive_def.fs i drive_logic.fs do pamięci VM
-        driver.load_forth_logic();
-        driver
-    }
-
-    /// Główny punkt wejścia dla żądań IPC z Ring 3 (VFS/User)
-    pub fn handle_request(&mut self, req: DiskRequest) -> DiskResponse {
-        match req.req_type {
-            DiskRequestType::Read => {
-                let success = self.read_sectors(req.lba, req.sector_count, req.buffer_phys);
-                DiskResponse { req_id: req.req_id, status: if success { 0 } else { -1 } }
-            }
-            DiskRequestType::Write => {
-                let success = self.write_sectors(req.lba, req.sector_count, req.buffer_phys);
-                DiskResponse { req_id: req.req_id, status: if success { 0 } else { -2 } }
-            }
-            DiskRequestType::Identify => {
-                self.identify_drive()
-            }
-            _ => DiskResponse { req_id: req.req_id, status: -255 },
+            identify_buf: [0u8; 512],
+            lba28_total:  0,
         }
     }
 
-    fn read_sectors(&mut self, lba: u64, count: u32, dest_phys: u64) -> bool {
-        // 1. Wywołaj Forth, aby przygotował rejestry ATA (LBA, CMD_READ)
-        // forth_exec(self.forth_vm, "ata-prepare-read", lba, count);
+    pub fn init(&mut self) -> bool {
+        unsafe {
+            // Soft reset
+            outb(ATA_ALT_CTRL, 0x04);
+            delay_400ns();
+            outb(ATA_ALT_CTRL, 0x00);
+            delay_400ns();
+            poll_bsy();
 
-        // 2. Wykonaj krytyczny transfer przez ASM (Ring 1 ma dostęp do portów)
+            self.identify()
+        }
+    }
+
+    unsafe fn identify(&mut self) -> bool {
+        let drv = if self.active_drive == 0 { 0xE0u8 } else { 0xF0u8 };
+        outb(ATA_DRIVE_SEL, drv);
+        delay_400ns();
+
+        // Clear registers
+        outb(ATA_SEC_COUNT, 0);
+        outb(ATA_LBA_LO, 0);
+        outb(ATA_LBA_MID, 0);
+        outb(ATA_LBA_HI, 0);
+        outb(ATA_CMD, CMD_IDENTIFY);
+
+        if inb(ATA_STATUS) == 0 { return false; } // no drive
+        if !poll_drq()          { return false; }
+
+        // Read 256 words into identify_buf using fast ASM transfer
+        transfer_sector_in(self.identify_buf.as_mut_ptr(), ATA_DATA);
+
+        // Parse LBA28 sector count from words 60-61
+        let lo = u16::from_le_bytes([self.identify_buf[120], self.identify_buf[121]]) as u32;
+        let hi = u16::from_le_bytes([self.identify_buf[122], self.identify_buf[123]]) as u32;
+        self.lba28_total = (hi << 16) | lo;
+
+        self.lba28_total > 0
+    }
+
+    // ── Request dispatch ─────────────────────────────────────────────────────
+
+    pub fn handle_request(&mut self, req: DiskRequest) -> DiskResponse {
+        match req.req_type {
+            DiskRequestType::Read => {
+                let ok = self.read_sectors(req.lba, req.sector_count, req.buffer_phys);
+                if ok { DiskResponse::ok(req.req_id) }
+                else  { DiskResponse::err(req.req_id, ERR_READ) }
+            }
+            DiskRequestType::Write => {
+                let ok = self.write_sectors(req.lba, req.sector_count, req.buffer_phys);
+                if ok { DiskResponse::ok(req.req_id) }
+                else  { DiskResponse::err(req.req_id, ERR_WRITE) }
+            }
+            DiskRequestType::Identify => {
+                let ok = unsafe { self.identify() };
+                if ok { DiskResponse::ok(req.req_id) }
+                else  { DiskResponse::err(req.req_id, ERR_IDENTIFY) }
+            }
+            DiskRequestType::Flush => {
+                let ok = self.flush();
+                if ok { DiskResponse::ok(req.req_id) }
+                else  { DiskResponse::err(req.req_id, ERR_FLUSH) }
+            }
+            #[allow(unreachable_patterns)]
+            _ => DiskResponse::err(req.req_id, ERR_UNSUPPORTED),
+        }
+    }
+
+    // ── Read ─────────────────────────────────────────────────────────────────
+
+    fn read_sectors(&mut self, lba: u64, count: u32, dest_phys: u64) -> bool {
         unsafe {
             for i in 0..count {
-                let offset = (i * 512) as usize;
-                // Czekaj na DRQ (możesz to zrobić w Forth lub tutaj)
-                transfer_sector_in((dest_phys as *mut u8).add(offset), 0x1F0);
+                let buf = (dest_phys + i as u64 * 512) as *mut u8;
+
+                setup_lba28(lba + i as u64, self.active_drive, 1);
+                outb(ATA_CMD, CMD_READ_PIO);
+
+                if !poll_drq() { return false; }
+
+                // Fast REP INSW transfer via crytic.asm
+                transfer_sector_in(buf, ATA_DATA);
             }
         }
         true
     }
 
-    fn load_forth_logic(&mut self) {
-        // Tutaj kompilujesz/ładujesz drive_def.fs i drive_logic.fs
-        // tak aby VM widziała słowa 'ata-read', 'ata-reset' itp.
+    // ── Write ────────────────────────────────────────────────────────────────
+
+    fn write_sectors(&mut self, lba: u64, count: u32, src_phys: u64) -> bool {
+        unsafe {
+            for i in 0..count {
+                let buf = (src_phys + i as u64 * 512) as *const u8;
+
+                setup_lba28(lba + i as u64, self.active_drive, 1);
+                outb(ATA_CMD, CMD_WRITE_PIO);
+
+                if !poll_drq() { return false; }
+
+                // Fast REP OUTSW transfer via crytic.asm
+                transfer_sector_out(buf, ATA_DATA);
+            }
+            // Flush write cache after all sectors written
+            self.flush()
+        }
+    }
+
+    // ── Flush ────────────────────────────────────────────────────────────────
+
+    fn flush(&self) -> bool {
+        unsafe {
+            outb(ATA_CMD, CMD_FLUSH);
+            poll_bsy()
+        }
     }
 }
 
-// Globalna instancja sterownika (wymaga synchronizacji w DevSpace)
-static mut ATA_INSTANCE: Option<AtaDriver> = None;
+// ── Global driver instance ────────────────────────────────────────────────────
+
+static mut ATA: Option<AtaDriver> = None;
+
+// ── DevSpace entry point ──────────────────────────────────────────────────────
 
 #[no_mangle]
-pub extern "C" fn dev_space_init() {
-    unsafe {
-        ATA_INSTANCE = Some(AtaDriver::new());
+pub extern "C" fn dev_space_init() -> ! {
+    // Initialize driver
+    let mut drv = AtaDriver::new();
+    let ready = drv.init();
+    unsafe { ATA = Some(drv); }
+
+    if !ready {
+        // No drive found — sit idle, still service Identify requests
     }
-    // Tutaj pętla odbierająca wiadomości IPC
+
+    // IPC event loop — poll shared ring, dispatch, write response
+    let ring = unsafe { &mut *(DEVSPACE_IPC_BASE as *mut IpcRing) };
+    let resp_ptr = (DEVSPACE_IPC_BASE + DEVSPACE_IPC_SIZE) as *mut DiskResponse;
+
+    let mut last_read: u32 = 0;
+
+    loop {
+        // Memory fence before reading write_idx
+        core::sync::atomic::fence(core::sync::atomic::Ordering::Acquire);
+
+        let wi = ring.write_idx;
+        if wi == last_read {
+            // No pending requests — yield to scheduler
+            unsafe {
+                core::arch::asm!(
+                    "int 0x80",
+                    in("rax") 3u64, // SYS_YIELD
+                    options(nostack)
+                );
+            }
+            continue;
+        }
+
+        // Process all pending requests
+        while last_read != wi {
+            let slot = (last_read as usize) % 60;
+            let req  = ring.slots[slot];
+            last_read = last_read.wrapping_add(1);
+
+            let resp = unsafe {
+                ATA.as_mut().map(|d| d.handle_request(req))
+                    .unwrap_or_else(|| DiskResponse::err(req.req_id, ERR_UNSUPPORTED))
+            };
+
+            // Write response and fence
+            unsafe { *resp_ptr = resp; }
+            core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
+        }
+    }
 }

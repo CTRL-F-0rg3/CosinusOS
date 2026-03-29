@@ -259,12 +259,11 @@ pub unsafe fn new_user_p4() -> PhysAddr {
     let n   = zpg_locked();
     let src = &*pt_ptr(K_P4);
     let dst = &mut *pt_ptr(n);
-    // Copy only upper 256 entries (kernel half: 0xFFFF800000000000+).
-    // Lower 256 = userspace virtual address space — start clean so no
-    // kernel mappings (without PTE_U) leak into the user page table.
-    // vmap() will build [0..256] fresh with PTE_U on every level.
-    for i in 0..256   { dst.e[i] = 0; }
-    for i in 256..512 { dst.e[i] = src.e[i]; }
+    // Full copy of kernel P4 so identity-mapped kernel memory (eu_stack,
+    // IDT, GDT, kernel code) remains reachable after CR3 switch inside
+    // enter_userspace — the iretq frame sits on eu_stack which is in P4[0].
+    // User pages are added on top by vmap() with PTE_U on all levels.
+    for i in 0..512 { dst.e[i] = src.e[i]; }
     n
 }
 

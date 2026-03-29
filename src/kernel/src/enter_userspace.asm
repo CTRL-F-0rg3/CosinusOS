@@ -8,7 +8,7 @@ global eu_stack_top
 
 section .bss
 align 16
-eu_stack:     resb 4096
+eu_stack:     resb 65536   ; 64KB — enough for frame + guard
 eu_stack_top:
 
 section .text
@@ -18,36 +18,44 @@ section .text
 enter_userspace:
     cli
 
-    ; Switch to our own ring-0 stack (in kernel .bss, identity-mapped)
+    ; Switch to our private ring-0 stack (identity-mapped, always accessible)
     lea rsp, [rel eu_stack_top]
 
-    ; Stash params before we clobber registers
+    ; Stash all params
     mov r8,  rdi    ; entry point
     mov r9,  rsi    ; user RSP
-    mov r10, rdx    ; arg (→ rdi after iretq)
+    mov r10, rdx    ; arg
     mov r11, rcx    ; user CR3
 
-    ; Build iretq frame NOW, while still on kernel CR3 so eu_stack is reachable.
-    ; After mov cr3, r11 the identity-mapped kernel .bss (eu_stack) may not be
-    ; accessible if the user P4 has P4[0] cleared (which it should for safety).
-    ; Layout (iretq pops in order: RIP CS RFLAGS RSP SS):
-    push 0x23       ; SS  = user data selector (GDT[4] | RPL3)
-    push r9         ; RSP = user stack top
-    push 0x202      ; RFLAGS: IF=1, bit1 always 1
-    push 0x1B       ; CS  = user code selector (GDT[3] | RPL3)
-    push r8         ; RIP = user entry point
-
-    ; Switch to user CR3 — from this point eu_stack may be unreachable,
-    ; but we no longer need it: the iretq frame is already on rsp.
+    ; Load user CR3 now — eu_stack is identity-mapped so it stays reachable
+    ; as long as new_user_p4 keeps the identity-map entries (P4[0]) in user P4.
+    ; We keep P4[0] in user P4 specifically for this window.
     mov cr3, r11
 
-    ; Zero all GPRs visible in ring-3 (except rdi = arg, rsp implicit)
+    ; Serialise: flush pipeline after CR3 switch
+    mov rax, cr3
+    mov cr3, rax
+
+    ; Build iretq frame (CPU reads this at iretq, rsp must be valid in new CR3)
+    ; iretq frame layout on stack (top of stack = lowest address):
+    ;   +0   RIP
+    ;   +8   CS
+    ;   +16  RFLAGS
+    ;   +24  RSP (user)
+    ;   +32  SS
+    push 0x23               ; SS
+    push r9                 ; user RSP
+    push 0x202              ; RFLAGS: IF=1, bit1=1
+    push 0x1B               ; CS  (ring-3, GDT[3])
+    push r8                 ; RIP
+
+    ; Zero all GPRs that ring-3 will see
     xor eax, eax
     xor ebx, ebx
     xor ecx, ecx
     xor edx, edx
     xor esi, esi
-    mov rdi, r10    ; pass arg as first param (System V ABI)
+    mov rdi, r10            ; arg → first param
     xor r8d,  r8d
     xor r9d,  r9d
     xor r10d, r10d
@@ -58,13 +66,13 @@ enter_userspace:
     xor r15d, r15d
     xor ebp,  ebp
 
-    ; Debug: 'E' = executing iretq
-    mov dx, 0xE9
-    mov al, 0x45
-    out dx, al
+    ; Confirm we are about to iretq (port 0xE9 = QEMU debug port)
+    mov dx,  0xE9
+    mov al,  0x45           ; 'E'
+    out dx,  al
 
     iretq
-    ; If we somehow return (we shouldn't), hang
+
 .hang:
     cli
     hlt
