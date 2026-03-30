@@ -1,0 +1,25 @@
+=== pon, 30 mar 2026, 09:58:30 CEST ===
+Push na GitHub...
+ERROR: Repository not found.
+fatal: Nie można czytać ze zdalnego repozytorium.
+
+Upewnij się, że masz odpowiednie prawa dostępu
+i że repozytorium istnieje.
+Push na Codeberg...
+To codeberg.org:Ctrl-F0rg3/CosinusOS.git
+   35bc872..6dbd4ac  main -> main
+Push zakończony: pon, 30 mar 2026, 09:58:35 CEST
+=== pon, 30 mar 2026, 10:00:01 CEST ===
+Push na GitHub...
+ERROR: Repository not found.
+fatal: Nie można czytać ze zdalnego repozytorium.
+
+Upewnij się, że masz odpowiednie prawa dostępu
+i że repozytorium istnieje.
+Push na Codeberg...
+Forgejo: Cannot find repository: Ctrl-F-0rg3/CosinusOS
+fatal: Nie można czytać ze zdalnego repozytorium.
+
+Upewnij się, że masz odpowiednie prawa dostępu
+i że repozytorium istnieje.
+Push zakończony: pon, 30 mar 2026, 10:00:09 CEST

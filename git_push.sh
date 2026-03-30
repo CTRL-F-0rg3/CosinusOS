@@ -3,7 +3,7 @@
 
 REPO_PATH="$HOME/Dokumenty/CosinusOS_"
 GITHUB_REMOTE="git@github.com:Ctrl-F0rg3/CosinusOS.git"
-CODEBERG_REMOTE="git@codeberg.org:Ctrl-F0rg3/CosinusOS.git"
+CODEBERG_REMOTE="git@codeberg.org:Ctrl-F-0rg3/CosinusOS.git"
 LOGFILE="$REPO_PATH/push_log.txt"
 
 cd "$REPO_PATH" || { echo "Nie można wejść do repozytorium"; exit 1; }
