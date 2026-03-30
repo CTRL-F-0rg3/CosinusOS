@@ -5,82 +5,60 @@ pub fn build(b: *std.Build) void {
     const iso_boot_dir = "../../iso/boot";
     const ds_target = build_dir ++ "/devspace_target";
 
-    // ── 1. Compile Odin drive.odin → drive_odin.o ────────────────────────────
-    // Odin compiles to an object file that Rust/lld links in.
-    // -target:linux_amd64 produces elf64 object compatible with our linker.
-    // -build-mode:obj = only compile, do not link.
-    const odin_drive = b.addSystemCommand(&.{
-        "odin",                         "build",
-        "src/drivers/drive/drive.odin",
-        "-file", // single file, not package
-        "-target:linux_amd64",
-        "-build-mode:obj",
-        "-out:" ++ build_dir ++ "/drive_odin.o",
-        "-o:speed",
-        "-no-crt", // no libc, freestanding
-        "-disable-assert",
-        "-no-bounds-check",
-    });
-
-    // ── 2. Assemble crytic.asm → crytic.o ────────────────────────────────────
+    // ── 1. Assemble crytic.asm → crytic.o ────────────────────────────────────
+    // Must run BEFORE cargo so build.rs can find the object.
     const nasm_crytic = b.addSystemCommand(&.{
-        "nasm",                         "-f", "elf64",
-        "src/drivers/drive/crytic.asm", "-o", build_dir ++ "/crytic.o",
+        "nasm", "-f",                     "elf64",
+        "-o",   build_dir ++ "/crytic.o", "src/drivers/drive/crytic.asm",
     });
 
-    // ── 3. Embed Forth source files into Rust binary ──────────────────────────
-    // drive_def.fs and drive_logic.fs are embedded as &[u8] via include_bytes!
-    // in mod.rs — no separate compilation step needed.
-    // We just verify the files exist before cargo runs.
-    const check_forth = b.addSystemCommand(&.{
-        "sh",                                                                                                                             "-c",
-        "test -f src/drivers/drive/drive_def.fs && " ++ "test -f src/drivers/drive/drive_logic.fs && " ++ "echo '[DS] Forth sources OK'",
+    // ── 2. Compile Odin drive.odin → drive_odin.o ────────────────────────────
+    // Odin -file flag compiles a single file as its own package.
+    // -build-mode:obj = emit .o, do not link.
+    // -no-crt = no libc startup code (freestanding).
+    // We need the output named drive_odin.o so build.rs finds it.
+    const odin_drive = b.addSystemCommand(&.{
+        "sh", "-c",
+        "odin build src/drivers/drive/drive.odin" ++ " -file" ++ " -target:linux_amd64" ++ " -build-mode:obj" ++ " -out:" ++ build_dir ++ "/drive_odin" // odin appends .o
+        ++ " -o:speed" ++ " -no-crt" ++ " -disable-assert" ++ " -no-bounds-check"
+            // Remove stdlib imports that don't exist freestanding
+        ++ " || true", // don't fail build if odin not installed yet
     });
 
-    // ── 4. Compile Rust devspace crate ───────────────────────────────────────
+    // ── 3. Cargo build — needs crytic.o + drive_odin.o ready first ───────────
+    // Passes build dir via env so build.rs can locate the .o files.
     const cargo_ds = b.addSystemCommand(&.{
-        "cargo",           "+nightly",             "build",        "--release",
-        "--manifest-path", "Cargo.toml",           "--target",     "x86_64-unknown-none",
-        "-Z",              "build-std=core,alloc", "--target-dir", ds_target,
+        "sh",                                                                                                                                                                                                    "-c",
+        "CARGO_BUILD_DIR=" ++ build_dir ++ " cargo +nightly build --release" ++ " --manifest-path Cargo.toml" ++ " --target x86_64-unknown-none" ++ " -Z build-std=core,alloc" ++ " --target-dir " ++ ds_target,
     });
-    cargo_ds.step.dependOn(&check_forth.step);
+    cargo_ds.step.dependOn(&nasm_crytic.step);
+    cargo_ds.step.dependOn(&odin_drive.step);
 
-    // ── 5. Link everything into devspace.elf ─────────────────────────────────
-    // Objects: crytic.o + drive_odin.o + Rust static lib
-    // Linker script sets load address 0x500000, keeps full ELF for kernel loader.
-    const link_elf = b.addSystemCommand(&.{
-        "sh",                                                                                                                                                                                                                                                                                                                                                          "-c",
-        "rust-lld -flavor gnu" ++ " -T src/devspace_linker.ld" ++ " -o " ++ build_dir ++ "/devspace.elf" ++ " " ++ build_dir ++ "/crytic.o" ++ " " ++ build_dir ++ "/drive_odin.o" ++ " --whole-archive" ++ " " ++ ds_target ++ "/x86_64-unknown-none/release/libdevspace.a" ++ " --no-whole-archive" ++ " -z max-page-size=0x1000" ++ " --gc-sections" ++ " -static",
-    });
-    link_elf.step.dependOn(&nasm_crytic.step);
-    link_elf.step.dependOn(&odin_drive.step);
-    link_elf.step.dependOn(&cargo_ds.step);
-
-    // ── 6. Copy ELF to ISO ────────────────────────────────────────────────────
+    // ── 4. Copy ELF to ISO (cargo + build.rs handles linking via linker.ld) ──
+    // The final ELF is produced by cargo's link step (with our linker script
+    // and the external .o files passed via build.rs rustc-link-arg).
     const copy = b.addSystemCommand(&.{
-        "sh",                                                                                                                                                        "-c",
-        "mkdir -p " ++ iso_boot_dir ++ " && cp " ++ build_dir ++ "/devspace.elf " ++ iso_boot_dir ++ "/devspace.elf" ++ " && echo '[DS] devspace.elf → iso/boot'",
+        "sh",                                                                                                                                                                                      "-c",
+        "mkdir -p " ++ iso_boot_dir ++ " && cp " ++ ds_target ++ "/x86_64-unknown-none/release/devspace " ++ iso_boot_dir ++ "/devspace.elf" ++ " && echo '[DS] devspace.elf copied to iso/boot'",
     });
-    copy.step.dependOn(&link_elf.step);
+    copy.step.dependOn(&cargo_ds.step);
 
     b.default_step.dependOn(&copy.step);
 
     // ── Clean ─────────────────────────────────────────────────────────────────
     const clean = b.step("clean", "Remove devspace build artifacts");
     const clean_cmd = b.addSystemCommand(&.{
-        "rm",                         "-rf",
-        build_dir ++ "/devspace.elf", build_dir ++ "/crytic.o",
-        build_dir ++ "/drive_odin.o", build_dir ++ "/devspace_target",
+        "rm",                            "-rf",
+        build_dir ++ "/crytic.o",        build_dir ++ "/drive_odin.o",
+        build_dir ++ "/devspace_target", iso_boot_dir ++ "/devspace.elf",
     });
     clean.dependOn(&clean_cmd.step);
 
     // ── Check ─────────────────────────────────────────────────────────────────
     const check = b.step("check", "cargo check devspace");
     const cargo_check = b.addSystemCommand(&.{
-        "cargo",               "+nightly",   "check",
-        "--manifest-path",     "Cargo.toml", "--target",
-        "x86_64-unknown-none", "-Z",         "build-std=core,alloc",
-        "--target-dir",        ds_target,
+        "sh",                                                                                                                                                                                          "-c",
+        "CARGO_BUILD_DIR=" ++ build_dir ++ " cargo +nightly check" ++ " --manifest-path Cargo.toml" ++ " --target x86_64-unknown-none" ++ " -Z build-std=core,alloc" ++ " --target-dir " ++ ds_target,
     });
     check.dependOn(&cargo_check.step);
 }
