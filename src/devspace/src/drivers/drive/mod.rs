@@ -3,7 +3,9 @@
 // Runs in Ring-1. Owns the ForthVM, handles IPC from Ring-3, calls
 // critical ASM transfers for actual PIO sector moves.
 
-use crate::api::{
+pub mod api;
+
+use super::api::{
     DiskRequest, DiskRequestType, DiskResponse,
     ERR_READ, ERR_WRITE, ERR_IDENTIFY, ERR_FLUSH, ERR_UNSUPPORTED,
     DEVSPACE_IPC_BASE, DEVSPACE_IPC_SIZE, IpcRing,
@@ -223,64 +225,6 @@ impl AtaDriver {
         unsafe {
             outb(ATA_CMD, CMD_FLUSH);
             poll_bsy()
-        }
-    }
-}
-
-// ── Global driver instance ────────────────────────────────────────────────────
-
-static mut ATA: Option<AtaDriver> = None;
-
-// ── DevSpace entry point ──────────────────────────────────────────────────────
-
-#[no_mangle]
-pub extern "C" fn dev_space_init() -> ! {
-    // Initialize driver
-    let mut drv = AtaDriver::new();
-    let ready = drv.init();
-    unsafe { ATA = Some(drv); }
-
-    if !ready {
-        // No drive found — sit idle, still service Identify requests
-    }
-
-    // IPC event loop — poll shared ring, dispatch, write response
-    let ring = unsafe { &mut *(DEVSPACE_IPC_BASE as *mut IpcRing) };
-    let resp_ptr = (DEVSPACE_IPC_BASE + DEVSPACE_IPC_SIZE) as *mut DiskResponse;
-
-    let mut last_read: u32 = 0;
-
-    loop {
-        // Memory fence before reading write_idx
-        core::sync::atomic::fence(core::sync::atomic::Ordering::Acquire);
-
-        let wi = ring.write_idx;
-        if wi == last_read {
-            // No pending requests — yield to scheduler
-            unsafe {
-                core::arch::asm!(
-                    "int 0x80",
-                    in("rax") 3u64, // SYS_YIELD
-                    options(nostack)
-                );
-            }
-            continue;
-        }
-
-        // Process all pending requests
-        while last_read != wi {
-            let slot = (last_read as usize) % 60;
-            let req  = ring.slots[slot];
-            last_read = last_read.wrapping_add(1);
-
-            let resp = unsafe {
-                ATA.as_mut().map(|d| d.handle_request(req))
-                    .unwrap_or_else(|| DiskResponse::err(req.req_id, ERR_UNSUPPORTED))
-            };
-
-            // Write response and fence
-            unsafe { *resp_ptr = resp; }
-            core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
         }
     }
 }

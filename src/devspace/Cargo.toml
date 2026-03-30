@@ -1,6 +1,24 @@
 [package]
-name = "devspace"
+name    = "devspace"
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
+
+[[bin]]
+name = "devspace"
+path = "src/main.rs"
+
+[lib]
+name = "devspace"
+path = "src/lib.rs"
+
+[profile.release]
+opt-level = "s"     # size-optimized
+lto       = true
+panic     = "abort"
+strip     = false   # keep symbols for kernel symbol table
 
 [dependencies]
+# no_std — no external deps
+
+[features]
+default = []
