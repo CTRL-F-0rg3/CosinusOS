@@ -5,7 +5,31 @@
 
 pub mod api;
 
-use super::api::{
+// ── Forth sources embedded at compile time ────────────────────────────────────
+// The Forth VM in drive.odin interprets these at runtime.
+// No separate Forth compiler needed — VM is the compiler.
+const DRIVE_DEF_FS:   &[u8] = include_bytes!("drive_def.fs");
+const DRIVE_LOGIC_FS: &[u8] = include_bytes!("drive_logic.fs");
+
+/// Load Forth source into the Odin ForthVM via FFI.
+/// Called once during AtaDriver::init().
+extern "C" {
+    /// Feed one byte to the Forth interpreter in drive.odin.
+    /// Returns 0 = ok, -1 = error (word not found etc.)
+    fn forth_feed_byte(byte: u8) -> i32;
+    /// Reset the Forth VM to initial state.
+    fn forth_vm_reset();
+}
+
+fn forth_load(src: &[u8]) -> bool {
+    for &b in src {
+        if unsafe { forth_feed_byte(b) } < 0 { return false; }
+    }
+    true
+}
+
+
+use self::api::{
     DiskRequest, DiskRequestType, DiskResponse,
     ERR_READ, ERR_WRITE, ERR_IDENTIFY, ERR_FLUSH, ERR_UNSUPPORTED,
     DEVSPACE_IPC_BASE, DEVSPACE_IPC_SIZE, IpcRing,
@@ -113,6 +137,11 @@ impl AtaDriver {
     }
 
     pub fn init(&mut self) -> bool {
+        // Load Forth logic into the Odin VM interpreter
+        unsafe { forth_vm_reset(); }
+        if !forth_load(DRIVE_DEF_FS)   { return false; }
+        if !forth_load(DRIVE_LOGIC_FS) { return false; }
+
         unsafe {
             // Soft reset
             outb(ATA_ALT_CTRL, 0x04);
