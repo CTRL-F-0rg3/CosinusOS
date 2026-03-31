@@ -13,20 +13,10 @@ const DRIVE_LOGIC_FS: &[u8] = include_bytes!("drive_logic.fs");
 
 /// Load Forth source into the Odin ForthVM via FFI.
 /// Called once during AtaDriver::init().
-extern "C" {
-    /// Feed one byte to the Forth interpreter in drive.odin.
-    /// Returns 0 = ok, -1 = error (word not found etc.)
-    fn forth_feed_byte(byte: u8) -> i32;
-    /// Reset the Forth VM to initial state.
-    fn forth_vm_reset();
-}
-
-fn forth_load(src: &[u8]) -> bool {
-    for &b in src {
-        if unsafe { forth_feed_byte(b) } < 0 { return false; }
-    }
-    true
-}
+// Forth source is loaded into the VM at runtime by the Odin ForthVM
+// (drive.odin). Until Odin is linked, these are no-ops — the direct
+// Rust ATA path (ata_read_sector_direct etc.) handles all I/O.
+fn forth_load(_src: &[u8]) -> bool { true }
 
 
 use self::api::{
@@ -37,13 +27,42 @@ use self::api::{
 
 // ── FFI — critical ASM (crytic.asm) ──────────────────────────────────────────
 
-extern "C" {
-    /// Read 256 words (512 bytes) from `port` into `buf`.
-    fn transfer_sector_in(buf: *mut u8, port: u16);
-    /// Write 256 words (512 bytes) from `buf` to `port`.
-    fn transfer_sector_out(buf: *const u8, port: u16);
-    /// 400ns delay via four alt-status reads.
-    fn delay_400ns();
+// ── Critical transfer routines (inline Rust, same as crytic.asm) ────────────
+// When crytic.o is linked these are replaced by the ASM versions.
+// For now pure Rust fallback ensures the binary links without crytic.o.
+
+#[inline(always)]
+unsafe fn transfer_sector_in(buf: *mut u8, port: u16) {
+    // REP INSW: read 256 words from ATA data port into buf
+    core::arch::asm!(
+        "rep insw",
+        in("dx")  port,
+        in("rdi") buf,
+        inout("ecx") 256u32 => _,
+        options(nostack)
+    );
+}
+
+#[inline(always)]
+unsafe fn transfer_sector_out(buf: *const u8, port: u16) {
+    // REP OUTSW: write 256 words from buf to ATA data port
+    core::arch::asm!(
+        "rep outsw",
+        in("dx")  port,
+        in("rsi") buf,
+        inout("ecx") 256u32 => _,
+        options(nostack)
+    );
+}
+
+#[inline(always)]
+unsafe fn delay_400ns() {
+    // Read alt-status 4× ≈ 400ns per ATA spec
+    let _: u8;
+    core::arch::asm!("in al, dx", out("al") _, in("dx") 0x3F6u16, options(nostack, nomem));
+    core::arch::asm!("in al, dx", out("al") _, in("dx") 0x3F6u16, options(nostack, nomem));
+    core::arch::asm!("in al, dx", out("al") _, in("dx") 0x3F6u16, options(nostack, nomem));
+    core::arch::asm!("in al, dx", out("al") _, in("dx") 0x3F6u16, options(nostack, nomem));
 }
 
 // ── ATA port addresses ────────────────────────────────────────────────────────
@@ -137,11 +156,6 @@ impl AtaDriver {
     }
 
     pub fn init(&mut self) -> bool {
-        // Load Forth logic into the Odin VM interpreter
-        unsafe { forth_vm_reset(); }
-        if !forth_load(DRIVE_DEF_FS)   { return false; }
-        if !forth_load(DRIVE_LOGIC_FS) { return false; }
-
         unsafe {
             // Soft reset
             outb(ATA_ALT_CTRL, 0x04);

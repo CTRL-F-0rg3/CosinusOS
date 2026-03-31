@@ -54,8 +54,10 @@ pub fn build(b: *std.Build) void {
     // ── 6. Diagnostics ────────────────────────────────────────────────────────
     const diag_step = b.step("diag", "Show build summary");
     const diag_cmd = b.addSystemCommand(&.{
-        "sh",                                                                                                                                                                                                                                                       "-c",
-        "echo '=== BUILD ===' && " ++ "ls -lh " ++ build_dir ++ "/kernel.elf " ++ build_dir ++ "/userspace.bin " ++ build_dir ++ "/devspace.elf " ++ "2>/dev/null && " ++ "echo '--- grub.cfg ---' && " ++ "cat " ++ iso_root ++ "/boot/grub/grub.cfg 2>/dev/null",
+        "sh", "-c",
+        "echo '=== BUILD ===' && " ++ "ls -lh " ++ build_dir ++ "/kernel.elf " ++ build_dir ++ "/userspace.bin " ++ iso_root ++ "/boot/devspace.elf " // devspace lives in iso/boot, not build/
+        ++ "2>/dev/null || true && " // never fail diag
+        ++ "echo '--- grub.cfg ---' && " ++ "cat " ++ iso_root ++ "/boot/grub/grub.cfg 2>/dev/null || true",
     });
     diag_cmd.step.dependOn(iso_step);
     diag_step.dependOn(&diag_cmd.step);
@@ -80,9 +82,6 @@ pub fn build(b: *std.Build) void {
         "-smp",
         "2",
         "-no-reboot",
-        // ATA disk image — devspace will read/write this
-        "-drive",
-        "file=" ++ build_dir ++ "/disk.img,format=raw,if=ide,index=0",
     }) catch unreachable;
 
     if (debug) args.appendSlice(b.allocator, &.{
@@ -95,8 +94,19 @@ pub fn build(b: *std.Build) void {
         "-s", "-S",
     }) catch unreachable;
 
+    // Create disk.img if it doesn't exist yet
+    const ensure_disk = b.addSystemCommand(&.{
+        "sh",                                                                                                                                                                      "-c",
+        "test -f " ++ build_dir ++ "/disk.img || " ++ "(dd if=/dev/zero of=" ++ build_dir ++ "/disk.img bs=1M count=20 2>/dev/null " ++ "&& echo '[DISK] Created 20MB disk.img')",
+    });
+    ensure_disk.step.dependOn(diag_step);
+
+    // Append disk drive arg now that we know the file will exist
+    args.append(b.allocator, "-drive") catch unreachable;
+    args.append(b.allocator, "file=" ++ build_dir ++ "/disk.img,format=raw,if=ide,index=0") catch unreachable;
+
     const qemu_run = b.addSystemCommand(args.items);
-    qemu_run.step.dependOn(diag_step);
+    qemu_run.step.dependOn(&ensure_disk.step);
     run_step.dependOn(&qemu_run.step);
 
     // ── 8. Default target ─────────────────────────────────────────────────────

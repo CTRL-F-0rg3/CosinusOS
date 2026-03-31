@@ -1,7 +1,7 @@
 // CosinusOS — userspace_loader.rs
 // Multiboot2 module parser + ELF64/flat binary loader
 
-use crate::mm::{PhysAddr, VirtAddr, PAGE_SIZE, PTE_W, PTE_U, mm_alloc, vmap, vunmap, new_user_p4};
+use crate::mm::{PhysAddr, VirtAddr, PAGE_SIZE, PTE_W, PTE_U, mm_alloc, vmap, new_user_p4};
 use crate::debug::{col, print, printc, num_str, hex_str};
 
 pub static mut US_ENTRY: VirtAddr  = 0;
@@ -154,19 +154,17 @@ unsafe fn load_elf64(elf: *const u8, _sz: usize) -> bool {
 
 // ── Stack allocation + thread slot setup ─────────────────────────────────────
 unsafe fn spawn_and_report(entry: u64, cr3: PhysAddr) -> bool {
-    const STACK_BASE:  u64   = 0x07C0_0000;
+    // Stack at 0x0000_7F00_0000_0000 — high userspace address, never conflicts
+    // with kernel identity-map (which only covers low physical memory in P4[0]).
+    const STACK_BASE:  u64   = 0x0000_7F00_0000_0000;
     const STACK_PAGES: usize = 64; // 256 KB
 
     for p in 0..STACK_PAGES {
-        let vaddr = STACK_BASE + p as u64 * PAGE_SIZE as u64;
-        // Unmap first — P4 was copied from K_P4 which may already have leaf
-        // PTEs at this range without PTE_U. vmap() only updates intermediate
-        // entries via goc(), not the leaf, so we must clear stale entries.
-        vunmap(cr3, vaddr);
         let phys = mm_alloc();
         if phys == 0 { return false; }
         core::ptr::write_bytes(phys as *mut u8, 0, PAGE_SIZE);
-        vmap(cr3, vaddr, phys, PTE_W | PTE_U);
+        // Fresh address — no stale leaf PTEs from K_P4 here
+        vmap(cr3, STACK_BASE + p as u64 * PAGE_SIZE as u64, phys, PTE_W | PTE_U);
     }
 
     // RSP must be 16-byte aligned; point to top of last mapped page
