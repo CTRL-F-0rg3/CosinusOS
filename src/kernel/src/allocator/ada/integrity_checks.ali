@@ -1,6 +1,7 @@
 V "GNAT Lib v15"
 A -O2
 A -fno-exceptions
+A -fno-stack-protector
 A -mno-red-zone
 A -mcmodel=large
 P ZX

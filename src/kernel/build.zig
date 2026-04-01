@@ -47,7 +47,7 @@ pub fn build(b: *std.Build) void {
     //   build_dir = "../../build" -> CosinusOS_/build/
     //   Z src/allocator/ada/ do ../../build/ = ../../../../../build/
     // -----------------------------------------------------------------------
-    const ada_flags = "-fno-exceptions -O2 -mno-red-zone -mcmodel=large";
+    const ada_flags = "-fno-exceptions -fno-stack-protector -O2 -mno-red-zone -mcmodel=large";
     const ada_out = "../../../../../build";
 
     const ada_integrity = b.addSystemCommand(&.{
