@@ -1,0 +1,122 @@
+V "GNAT Lib v15"
+A -O2
+A -fno-exceptions
+A -mno-red-zone
+A -mcmodel=large
+P ZX
+
+RN
+RV NO_DYNAMIC_SIZED_OBJECTS
+RV NO_IMPLEMENTATION_ATTRIBUTES
+RV NO_OBSOLESCENT_FEATURES
+
+U lifecycle%b		lifecycle.adb		c1612b15 NE OO PK
+W audit_log%s		audit_log.adb		audit_log.ali
+W interfaces%s		interfac.ads		interfac.ali
+W interfaces.c%s	i-c.adb			i-c.ali
+W system%s		system.ads		system.ali
+W system.machine_code%s	s-maccod.ads		s-maccod.ali
+W system.storage_elements%s  s-stoele.ads	s-stoele.ali
+
+U lifecycle%s		lifecycle.ads		5882f36f EE NE OO PK
+W interfaces%s		interfac.ads		interfac.ali
+W interfaces.c%s	i-c.adb			i-c.ali
+W system%s		system.ads		system.ali
+
+D ada.ads		20260209135214 76789da1 ada%s
+D a-unccon.ads		20260209135214 0e9b276f ada.unchecked_conversion%s
+D audit_log.ads		20260401143003 08172a0d audit_log%s
+D interfac.ads		20260209135214 9111f9c1 interfaces%s
+D i-c.ads		20260209135214 e94c966a interfaces.c%s
+D lifecycle.ads		20260401143021 34f7f7cb lifecycle%s
+D lifecycle.adb		20260401143034 15d9bc4f lifecycle%b
+D system.ads		20260209135214 14286b0f system%s
+D s-exctab.ads		20260209135214 91bef6ef system.exception_table%s
+D s-maccod.ads		20260209135214 cdca081e system.machine_code%s
+D s-parame.ads		20260209135214 3597fc11 system.parameters%s
+D s-stalib.ads		20260209135214 1c9580f6 system.standard_library%s
+D s-stoele.ads		20260209135214 ccded4e8 system.storage_elements%s
+G a e
+G c Z s b [init lifecycle 9 14 none]
+G c Z s b [reinit lifecycle 12 14 none]
+G c Z s b [shutdown lifecycle 15 14 none]
+G c Z s b [version lifecycle 18 13 none]
+G c Z s b [is_initialized lifecycle 21 13 none]
+G c Z s b [get_heap_range lifecycle 24 14 none]
+G c Z b b [out_char lifecycle 19 14 none]
+G c Z b b [out_str lifecycle 25 14 none]
+G c Z b b [out_dec lifecycle 30 14 none]
+G c Z b b [out_hex16 lifecycle 44 14 none]
+G r c none [reinit lifecycle 12 14 none] [get_stats audit_log 19 14 none]
+G r c none [shutdown lifecycle 15 14 none] [get_stats audit_log 19 14 none]
+X 3 audit_log.ads
+7K9*Audit_Log 28e14 7|6w6 75r7 93r7
+19U14*Get_Stats 7|75s17 93s17
+X 4 interfac.ads
+47K9*Interfaces 247e15 6|4w6 4r24 5r6 21r35 7|5r6 5r35 108r35
+92M9*Unsigned_32 6|18r28 7|14r18 106r28
+95M9*Unsigned_64 6|9r50 12r52 24r68 7|13r18 30r27 31r13 44r29 46r19 59r50
+. 66r18 68r36 72r52 73r17 84r18 86r36 91r17 94r48 113r68
+184V13*Shift_Right{95M9} 7|51s17
+X 5 i-c.ads
+33K20*C 601e17 6|5w17 21r46 7|5w17 5r46 108r46
+62I9*int<integer> 6|21r48 7|108r48
+X 6 lifecycle.ads
+7K9*Lifecycle 27l5 27e14 7|8b14 119l5 119t14
+9U14*Init 9>20 9>43 7|59b14 70l8 70t12
+9m20 Base{8|67M9} 7|59b20 61r22 66r43
+9m43 Size{4|95M9} 7|59b43 62r22 67r36
+12U14*Reinit 12>22 12>45 7|72b14 88l8 88t14
+12m22 Base{8|67M9} 7|72b22 79r22 84r43
+12m45 Size{4|95M9} 7|72b45 80r22 85r36
+15U14*Shutdown 7|90b14 104l8 104t16
+18V13*Version{4|92M9} 7|106b13
+21V13*Is_Initialized{5|62I9} 7|108b13 111l8 111t22
+24U14*Get_Heap_Range 24<30 24<57 7|113b14 117l8 117t22
+24m30 Base{8|67M9} 7|113b30 115m7
+24m57 Size{4|95M9} 7|113b57 116m7
+X 7 lifecycle.adb
+11b4 Initialized{boolean} 64m7 82m7 103m7 110r10
+12m4 Heap_Base{8|67M9} 61m7 79m7 115r15
+13m4 Heap_Sz{4|95M9} 62m7 80m7 116r15
+14m4 Ver{4|92M9} 63m7 63r22 68r49 81m7 81r22 86r49 94r61 106r44
+19U14 Out_Char 19b14 19>24 23l8 23t16 27s24 35s23 69s7 78s55 87s7 98s7 101s32
+19e24 C{character} 22r48
+25U14 Out_Str 25b14 25>23 28l8 28t15 41s7 53s7 65s7 67s7 68s7 76s7 77s7 78s7
+. 78s40 83s7 85s7 86s7 94s7 95s7 96s7 97s7 97s40 100s10 101s10
+25a23 S{string} 27r17
+27e11 Ch=27:17{character} 27r34
+30U14 Out_Dec 30b14 30>23 42l8 42t15 67s27 68s27 76s45 77s28 78s27 85s27
+. 86s27 94s39 95s29 96s28 97s27 100s37
+30m23 V{4|95M9} 31r28
+31m7 Tmp{4|95M9} 35r10 36r13 37r69 38m10 38r17
+32a7 Buf{string} 37m10 41r16
+33i7 Pos{integer} 37r15 39m10 39r17 41r21
+44U14 Out_Hex16 44b14 44>25 54l8 54t17 66s7 84s7
+44m25 V{4|95M9} 46r34
+45a7 Hex_Chars{string} 50r21
+46m7 Tmp{4|95M9} 50r41 51m10 51r30
+47a7 Buf{string} 50m10 53r16
+49i11 I{integer} 50r15
+73m7 A{4|95M9} 75m28 76r54
+73m10 F{4|95M9} 75m31 77r37
+73m13 L{4|95M9} 75m34 78r36
+91m7 A{4|95M9} 93m28 95r38
+91m10 F{4|95M9} 93m31 96r37
+91m13 L{4|95M9} 93m34 97r36 99r10 100r46
+X 8 system.ads
+37K9*System 6|3w6 9r27 12r29 24r41 7|3r6 3r35 4r6 4r35 9r13 12r18 12r36 59r27
+. 72r29 113r41 8|155e11
+67M9*Address 6|9r34 12r36 24r48 7|9r20 12r25 59r34 72r36 113r48
+69m4*Null_Address{67M9} 7|12r43
+X 10 s-maccod.ads
+38K16*Machine_Code 7|3w13 3r42 10|142e24
+47I9*Asm_Input_Operand<integer>
+91U14*Asm 7|21s7
+94i6 Inputs{47I9} 7|22r12
+96b6 Volatile{boolean} 7|22r52
+X 13 s-stoele.ads
+43K16*Storage_Elements 7|4w13 4r42 13|104e28
+92M9*Integer_Address
+100V13*To_Integer{92M9} 7|66s31 84s31
+

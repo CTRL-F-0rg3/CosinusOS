@@ -1,0 +1,131 @@
+V "GNAT Lib v15"
+A -O2
+A -fno-exceptions
+A -mno-red-zone
+A -mcmodel=large
+P ZX
+
+RN
+RV NO_DEFAULT_INITIALIZATION
+RV NO_DYNAMIC_SIZED_OBJECTS
+RV NO_IMPLEMENTATION_ATTRIBUTES
+RV NO_IMPLICIT_LOOPS
+RV NO_ELABORATION_CODE
+RV NO_OBSOLESCENT_FEATURES
+
+U audit_log%b		audit_log.adb		dacb0ca9 OO PK
+W system%s		system.ads		system.ali
+W system.machine_code%s	s-maccod.ads		s-maccod.ali
+W system.storage_elements%s  s-stoele.ads	s-stoele.ali
+
+U audit_log%s		audit_log.ads		64622ea9 EE NE OO PK
+W interfaces%s		interfac.ads		interfac.ali
+W interfaces.c%s	i-c.adb			i-c.ali
+W system%s		system.ads		system.ali
+
+D ada.ads		20260209135214 76789da1 ada%s
+D a-unccon.ads		20260209135214 0e9b276f ada.unchecked_conversion%s
+D audit_log.ads		20260401143003 08172a0d audit_log%s
+D audit_log.adb		20260401143013 d3c8fa52 audit_log%b
+D interfac.ads		20260209135214 9111f9c1 interfaces%s
+D i-c.ads		20260209135214 e94c966a interfaces.c%s
+D system.ads		20260209135214 14286b0f system%s
+D s-exctab.ads		20260209135214 91bef6ef system.exception_table%s
+D s-maccod.ads		20260209135214 cdca081e system.machine_code%s
+D s-parame.ads		20260209135214 3597fc11 system.parameters%s
+D s-stalib.ads		20260209135214 1c9580f6 system.standard_library%s
+D s-stoele.ads		20260209135214 ccded4e8 system.storage_elements%s
+G a e
+G c Z s b [log_alloc audit_log 13 14 none]
+G c Z s b [log_free audit_log 16 14 none]
+G c Z s b [get_stats audit_log 19 14 none]
+G c Z s b [dump_last audit_log 25 14 none]
+G c Z b b [out_char audit_log 12 14 none]
+G c Z b b [out_str audit_log 18 14 none]
+G c Z b b [out_hex audit_log 23 14 none]
+G c Z b b [out_dec audit_log 35 14 none]
+G c Z b b [audit_entryIP audit_log 54 9 none]
+G c Z b b [Tentry_arrayBIP audit_log 61 4 none]
+G c Z b b [push audit_log 69 14 none]
+X 3 audit_log.ads
+7K9*Audit_Log 28l5 28e14 4|6b14 135l5 135t14
+9N4*AUDIT_SIZE 4|61r36 72r40 112r18 112r43 119r34 119r50
+11I12*C_Bool{6|62I9} 13r77 16r76 4|78r77 85r76
+13U14*Log_Alloc 13>25 13>47 13>67 4|78b14 83l8 83t17
+13m25 Ptr{7|67M9} 4|78b25 80r14
+13m47 Size{5|95M9} 4|78b47 80r19 82r34
+13i67 Is_Slab{11I12} 4|78b67 80r25
+16U14*Log_Free 16>24 16>46 16>66 4|85b14 94l8 94t16
+16m24 Ptr{7|67M9} 4|85b24 87r14
+16m46 Size{5|95M9} 4|85b46 87r19 89r24 90r37
+16i66 Is_Slab{11I12} 4|85b66 87r25
+19U14*Get_Stats 20<7 21<7 22<7 4|96b14 105l8 105t17
+20m7 Total_Allocs{5|95M9} 4|97b7 102m7
+21m7 Total_Frees{5|95M9} 4|98b7 103m7
+22m7 Live_Bytes{5|95M9} 4|99b7 104m7
+25U14*Dump_Last 25>25 4|107b14 133l8 133t17
+25m25 N{5|92M9} 4|107b25 108r35
+X 4 audit_log.adb
+12U14 Out_Char 12b14 12>24 16l8 16t16 20s24 40s23 117s26 130s13
+12e24 C{character} 15r48
+18U14 Out_Str 18b14 18>23 21l8 21t15 32s7 46s7 113s7 114s7 115s7 116s7 117s7
+. 122s41 123s41 125s31 126s31 128s13 129s13 129s46
+18a23 S{string} 20r17
+20e11 Ch=20:17{character} 20r34
+23U14 Out_Hex 23b14 23>23 33l8 33t15 128s29
+23m23 V{5|95M9} 25r34
+24a7 Hex_Chars{string} 29r21
+25m7 Tmp{5|95M9} 29r41 30m10 30r30
+26a7 Buf{string} 29m10 32r16
+28i11 I{integer} 29r15
+35U14 Out_Dec 35b14 35>23 47l8 47t15 113s41 114s29 115s28 116s27 129s28
+35m23 V{5|95M9} 36r28
+36m7 Tmp{5|95M9} 40r10 41r13 42r69 43m10 43r17
+37a7 Buf{string} 42m10 46r16
+38i7 Pos{integer} 42r15 44m10 44r17 46r21
+52E9 Entry_Kind 52e46 58r17
+52n24 Kind_Alloc{52E9} 58r35 80r39 122r25
+52n36 Kind_Free{52E9} 87r39
+54R9 Audit_Entry 59e14 61r55 69r24 110r15
+55m7*Ptr{7|67M9} 121r15 128r65
+56m7*Size{5|95M9} 129r39
+57b7*Is_Slab{boolean} 125r18
+58e7*Kind{52E9} 122r18
+61A9 Entry_Array(54R9)<integer> 63r17
+63a4 Ring{61A9} 71m7 120r17
+64i4 Ring_Head{integer} 71r13 72m7 72r21 119r18
+65m4 N_Allocs{5|95M9} 81m7 81r21 102r23 114r38
+66m4 N_Frees{5|95M9} 88m7 88r18 103r23 115r37
+67m4 Live_Total{5|95M9} 82m7 82r21 89r10 90m10 90r24 92m10 104r23 116r36
+69U14 Push 69b14 69>20 73l8 73t12 80s7 87s7
+69r20 E{54R9} 71r27
+108i7 Count{integer} 112r10 112m34 113r63 118r21
+109i7 Idx{integer} 119m10 120r23
+110r7 E{54R9} 120m10 121r13 122r16 125r16 128r63 129r37
+118i11 I{integer} 119r30
+X 5 interfac.ads
+47K9*Interfaces 3|4w6 4r24 5r6 5r24 11r22 5|247e15
+92M9*Unsigned_32 3|25r29 4|107r29
+95M9*Unsigned_64 3|13r54 16r53 20r26 21r26 22r26 4|23r27 25r19 35r27 36r13
+. 56r17 65r17 66r17 67r17 78r54 85r53 97r26 98r26 99r26 113r50 128r38
+184V13*Shift_Right{95M9} 4|30s17
+X 6 i-c.ads
+33K20*C 3|5w17 5r35 11r33 6|601e17
+62I9*int<integer> 3|11r35
+X 7 system.ads
+37K9*System 3|3w6 13r31 16r30 4|3r6 3r35 4r6 4r35 7r13 55r17 55r35 78r31
+. 85r30 121r22 7|155e11
+67M9*Address 3|13r38 16r37 4|7r20 55r24 78r38 85r37
+69m4*Null_Address{67M9} 4|55r42 121r29
+81V14*"="{boolean} 4|121r19
+X 9 s-maccod.ads
+38K16*Machine_Code 4|3w13 3r42 9|142e24
+47I9*Asm_Input_Operand<integer>
+91U14*Asm 4|14s7
+94i6 Inputs{47I9} 4|15r12
+96b6 Volatile{boolean} 4|15r52
+X 12 s-stoele.ads
+43K16*Storage_Elements 4|4w13 4r42 12|104e28
+92M9*Integer_Address
+100V13*To_Integer{92M9} 4|128s51
+

@@ -1,0 +1,115 @@
+V "GNAT Lib v15"
+A -O2
+A -fno-exceptions
+A -mno-red-zone
+A -mcmodel=large
+P ZX
+
+RN
+RV NO_DYNAMIC_SIZED_OBJECTS
+RV NO_IMPLEMENTATION_ATTRIBUTES
+RV NO_OBSOLESCENT_FEATURES
+
+U integrity_checks%b	integrity_checks.adb	0039a71a NE OO PK
+W system%s		system.ads		system.ali
+W system.machine_code%s	s-maccod.ads		s-maccod.ali
+W system.storage_elements%s  s-stoele.ads	s-stoele.ali
+
+U integrity_checks%s	integrity_checks.ads	6f4c6fa3 EE NE OO PK
+W interfaces%s		interfac.ads		interfac.ali
+W interfaces.c%s	i-c.adb			i-c.ali
+W system%s		system.ads		system.ali
+
+D ada.ads		20260209135214 76789da1 ada%s
+D a-unccon.ads		20260209135214 0e9b276f ada.unchecked_conversion%s
+D integrity_checks.ads	20260401142911 03396b07 integrity_checks%s
+D integrity_checks.adb	20260401142947 021410eb integrity_checks%b
+D interfac.ads		20260209135214 9111f9c1 interfaces%s
+D i-c.ads		20260209135214 e94c966a interfaces.c%s
+D system.ads		20260209135214 14286b0f system%s
+D s-exctab.ads		20260209135214 91bef6ef system.exception_table%s
+D s-maccod.ads		20260209135214 cdca081e system.machine_code%s
+D s-parame.ads		20260209135214 3597fc11 system.parameters%s
+D s-stalib.ads		20260209135214 1c9580f6 system.standard_library%s
+D s-stoele.ads		20260209135214 ccded4e8 system.storage_elements%s
+G a e
+G c Z s b [write_canary integrity_checks 17 14 none]
+G c Z s b [check_canary integrity_checks 20 13 none]
+G c Z s b [register_free integrity_checks 24 14 none]
+G c Z s b [is_double_free integrity_checks 27 13 none]
+G c Z s b [check_bounds integrity_checks 30 13 none]
+G c Z b b [debug_str integrity_checks 9 14 none]
+G c Z b b [Taddr_arrayBIP integrity_checks 45 4 none]
+G c Z b b [ensure_init integrity_checks 51 14 none]
+X 3 integrity_checks.ads
+7K9*Integrity_Checks 39l5 39e21 4|6b14 115l5 115t21
+9m4*CANARY_VALUE{5|95M9} 4|27r15 35r18
+10N4*PAGE_SIZE 4|109r59
+11N4*DFREE_BUF_SIZE 4|45r35 65r40
+13I12*C_Bool{6|62I9} 14r23 15r23 21r13 27r58 35r25 36r13 4|30r76 68r58 88r25
+. 89r13
+14i4*C_False{13I12} 4|37r17 77r14 98r53 101r55 104r58 107r54 109r29 110r61
+15i4*C_True{13I12} 4|34r31 39r14 74r20 112r14
+17U14*Write_Canary 17>28 17>50 4|22b14 28l8 28t20
+17m28 Ptr{7|67M9} 4|22b28 24r25
+17m50 Size{5|95M9} 4|22b50 24r47 26r10
+20V13*Check_Canary{13I12} 20>27 20>49 4|30b13 40l8 40t20
+20m27 Ptr{7|67M9} 4|30b27 32r25
+20m49 Size{5|95M9} 4|30b49 32r47 34r10
+24U14*Register_Free 24>29 4|61b14 66l8 66t21
+24m29 Ptr{7|67M9} 4|61b29 64r32
+27V13*Is_Double_Free{13I12} 27>29 4|68b13 78l8 78t22
+27m29 Ptr{7|67M9} 4|68b29 72r29
+30V13*Check_Bounds{13I12} 31>7 32>7 33>7 34>7 35>7 4|83b13 113l8 113t20
+31m7 Ptr{7|67M9} 4|84b7 94r9 95r59 97r10 100r10
+32m7 Size{5|95M9} 4|85b7 94r31 106r10
+33m7 Heap_Base{7|67M9} 4|86b7 92r9 100r16
+34m7 Heap_Size{5|95M9} 4|87b7 92r37
+35i7 Need_Page_Align{13I12} 4|88b7 109r10
+X 4 integrity_checks.adb
+9U14 Debug_Str 9b14 9>25 17l8 17t17 36s10 73s13 98s10 101s10 104s10 107s10
+. 110s10
+9a25 S{string} 11r17
+11e11 Ch=11:17{character} 13r51
+23m7 Slot{5|95M9} 27m7
+31m7 Slot{5|95M9} 35r10
+45A9 Addr_Array(7|67M9)<integer> 47r16
+47a4 Free_Ring{45A9} 54r19 55m13 64m7 71r16 72r13
+48i4 Ring_Head{integer} 64r18 65m7 65r21
+49b4 Ring_Init{boolean} 53r14 57m10
+51U14 Ensure_Init 51b14 59l8 59t19 63s7 70s7
+54i14 I{integer} 55r24
+71i11 I{integer} 72r24
+91m7 Heap_End{7|67M9} 103r22
+93m7 Block_End{7|67M9} 103r10
+95m7 Ptr_Int{12|92M9} 109r47
+X 5 interfac.ads
+47K9*Interfaces 3|4w6 4r24 5r6 5r24 13r22 5|247e15
+95M9*Unsigned_64 3|9r30 17r57 20r56 32r25 34r25 4|22r57 23r14 30r56 31r14
+. 85r25 87r25
+X 6 i-c.ads
+33K20*C 3|5w17 5r35 13r33 6|601e17
+62I9*int<integer> 3|13r35
+X 7 system.ads
+37K9*System 3|3w6 17r34 20r33 24r35 27r35 31r25 33r25 4|3r6 3r35 4r6 4r35
+. 7r13 22r34 30r33 45r58 55r30 61r35 68r35 84r25 86r25 91r28 93r28 97r16
+. 7|155e11
+67M9*Address 3|17r41 20r40 24r42 27r42 31r32 33r32 4|7r20 22r41 30r40 45r65
+. 61r42 68r42 84r32 86r32 91r35 93r35
+69m4*Null_Address{67M9} 4|55r37 97r23
+77V14*"<"{boolean} 4|100r14
+79V14*">"{boolean} 4|103r20
+81V14*"="{boolean} 4|72r27 97r14
+X 9 s-maccod.ads
+38K16*Machine_Code 4|3w13 3r42 9|142e24
+47I9*Asm_Input_Operand<integer>
+91U14*Asm 4|12s10 15s7
+94i6 Inputs{47I9} 4|13r15 16r12
+96b6 Volatile{boolean} 4|13r56 16r59
+X 12 s-stoele.ads
+43K16*Storage_Elements 4|4w13 4r42 12|104e28
+54I9*Storage_Offset<long_integer> 4|24r31 32r31 92r21 94r15
+74V14*"+"{7|67M9} 4|24r29 32r29 92r19 94r13
+92M9*Integer_Address 4|95r28
+100V13*To_Integer{92M9} 4|95s47
+
