@@ -4,8 +4,6 @@ pub mod buddy;
 pub mod slab;
 pub mod kernel_heap;
 pub mod ada_shims;
-pub mod buddy_asm_shims;
-pub mod slab_asm_shims;
 
 pub use kernel_heap::{KERNEL_HEAP, KHEAP_BASE, KHEAP_SIZE};
 pub use slab::MAX_SLAB_SIZE;
@@ -27,10 +25,7 @@ pub fn free_kb()  -> usize { KERNEL_HEAP.free_kb() }
 pub fn total_kb() -> usize { KERNEL_HEAP.total_kb() }
 pub fn used_kb()  -> usize { KERNEL_HEAP.used_kb() }
 
-/// Ada audit stats: (allocs, frees, live_bytes)
 pub fn ada_stats() -> (u64, u64, u64) { KERNEL_HEAP.ada_stats() }
-
-/// Ada allocator version (bumps on init/reinit)
 pub fn ada_version() -> u32 { KERNEL_HEAP.ada_version() }
 
 pub unsafe fn print_stats() {

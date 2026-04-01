@@ -190,6 +190,8 @@ impl BuddyAllocator {
         self.free_push(addr, order);
     }
 
+    pub fn heap_base(&self) -> usize { self.base }
+    pub fn heap_size(&self) -> usize { self.size }
     pub fn free_kb(&self)  -> usize { self.free_bytes / 1024 }
     pub fn total_kb(&self) -> usize { self.size / 1024 }
     pub fn used_kb(&self)  -> usize { self.total_kb() - self.free_kb() }
