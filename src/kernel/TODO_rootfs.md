@@ -19,6 +19,7 @@
 
 ---
 
+
 ## 1. VFS Core Extensions
 
 - [ ] Define `VNode` type: inode number, type (file/dir/symlink), size, permissions, driver pointer
