@@ -20,6 +20,7 @@ pub mod usb;
 pub mod display;
 pub mod kterminal;
 pub mod allocator;
+pub mod root_file_system;
 
 pub use mm::{PhysAddr, VirtAddr, PAGE_SIZE, PTE_W, PTE_U};
 pub use mm::{mm_alloc, mm_free_phys, mm_free_kb, mm_used_kb, mm_total_kb};
@@ -82,7 +83,7 @@ pub extern "C" fn kernel_main(mb_magic: u64, mb_info: u64) -> ! {
             allocator::init();
         }
         debug::log_ok("KernelHeap", true);
-
+        root_file_system::check_and_install();
         perm::init_gdt(); debug::log_ok("GDT", true);
         perm::init_pic(); debug::log_ok("PIC", true);
         perm::init_idt(); asm!("cli", options(nomem, nostack));
