@@ -3,9 +3,6 @@ const std = @import("std");
 pub fn build(b: *std.Build) void {
     const build_dir = "../../build";
 
-    // -----------------------------------------------------------------------
-    // NASM — original kernel assembly
-    // -----------------------------------------------------------------------
     const nasm_boot = b.addSystemCommand(&.{
         "nasm",           "-f", "elf64",
         "../../boot.asm", "-o", build_dir ++ "/boot.o",
@@ -19,9 +16,6 @@ pub fn build(b: *std.Build) void {
         "src/enter_userspace.asm", "-o", build_dir ++ "/enter_userspace.o",
     });
 
-    // -----------------------------------------------------------------------
-    // NASM — allocator hot paths
-    // -----------------------------------------------------------------------
     const nasm_bitmap = b.addSystemCommand(&.{
         "nasm",                             "-f", "elf64",
         "src/allocator/asm/bitmap_ops.asm", "-o", build_dir ++ "/bitmap_ops.o",
@@ -31,22 +25,6 @@ pub fn build(b: *std.Build) void {
         "src/allocator/asm/slab_hotpath.asm", "-o", build_dir ++ "/slab_hotpath.o",
     });
 
-    // -----------------------------------------------------------------------
-    // Ada — allocator integrity / audit / lifecycle
-    //
-    // Problem: na wielu systemach `gcc` nie ma frontendu Ada (brak gnat1).
-    // Rozwiązanie: używamy `gnat compile` który wywołuje właściwy
-    // x86_64-linux-gnu-gcc-XX z Ada frontend.
-    //
-    // Problem 2: `gnat compile` nie obsługuje -o — zawsze zapisuje .o
-    // do bieżącego katalogu jako <basename>.o.
-    // Rozwiązanie: cd do katalogu ze źródłem, kompiluj, mv do build/.
-    //
-    // Ścieżka: build.zig jest w src/kernel/
-    //   src/kernel/src/allocator/ada/ -> ../../../../.. -> CosinusOS_/
-    //   build_dir = "../../build" -> CosinusOS_/build/
-    //   Z src/allocator/ada/ do ../../build/ = ../../../../../build/
-    // -----------------------------------------------------------------------
     const ada_flags = "-fno-exceptions -fno-stack-protector -O2 -mno-red-zone -mcmodel=large";
     const ada_out = "../../../../../build";
 
@@ -69,16 +47,48 @@ pub fn build(b: *std.Build) void {
             "mv lifecycle.o " ++ ada_out ++ "/ada_lifecycle.o",
     });
 
-    // GNAT runtime stubs — zwykłe C, kompiluje cc (nie gcc żeby uniknąć
-    // problemów z brakującym gnat1 gdy gcc = wrapper)
     const ada_stubs = b.addSystemCommand(&.{
-        "cc",                                     "-c", "-O2",                       "-mno-red-zone", "-mcmodel=large",
-        "src/allocator/ada/gnat_runtime_stubs.c", "-o", build_dir ++ "/ada_stubs.o",
+        "cc",            "-c",                        "-O2",
+        "-mno-red-zone", "-mcmodel=large",            "src/allocator/ada/gnat_runtime_stubs.c",
+        "-o",            build_dir ++ "/ada_stubs.o",
     });
 
     // -----------------------------------------------------------------------
-    // Rust kernel
+    // objcopy — embed iso/boot/ binaries into linkable .o files
+    // iso/boot/ files are built by devspace/userspace steps before kernel
+    // kernel.elf embed uses previous build (chicken-and-egg is unavoidable)
     // -----------------------------------------------------------------------
+    const embed_kernel = b.addSystemCommand(&.{
+        "sh", "-c",
+        "[ -f ../../iso/boot/kernel.elf ] && " ++
+            "objcopy -I binary -O elf64-x86-64 -B i386:x86-64 " ++
+            "../../iso/boot/kernel.elf " ++ build_dir ++ "/embed_kernel.o" ++
+            " || " ++
+            // First build — no kernel.elf yet, create empty placeholder .o
+            "echo '' | as -o " ++ build_dir ++ "/embed_kernel.o --defsym _binary_kernel_elf_start=0 --defsym _binary_kernel_elf_size=0 /dev/stdin 2>/dev/null || true",
+    });
+    const embed_devspace = b.addSystemCommand(&.{
+        "sh", "-c",
+        "[ -f ../../iso/boot/devspace.elf ] && " ++
+            "objcopy -I binary -O elf64-x86-64 -B i386:x86-64 " ++
+            "../../iso/boot/devspace.elf " ++ build_dir ++ "/embed_devspace.o" ++
+            " || true",
+    });
+    const embed_fsserver = b.addSystemCommand(&.{
+        "sh", "-c",
+        "[ -f ../../iso/boot/fs_server.bin ] && " ++
+            "objcopy -I binary -O elf64-x86-64 -B i386:x86-64 " ++
+            "../../iso/boot/fs_server.bin " ++ build_dir ++ "/embed_fsserver.o" ++
+            " || true",
+    });
+    const embed_userspace = b.addSystemCommand(&.{
+        "sh", "-c",
+        "[ -f ../../iso/boot/userspace.bin ] && " ++
+            "objcopy -I binary -O elf64-x86-64 -B i386:x86-64 " ++
+            "../../iso/boot/userspace.bin " ++ build_dir ++ "/embed_userspace.o" ++
+            " || true",
+    });
+
     const cargo_kernel = b.addSystemCommand(&.{
         "cargo",           "+nightly",
         "build",           "--release",
@@ -97,8 +107,13 @@ pub fn build(b: *std.Build) void {
     cargo_kernel.step.dependOn(&ada_stubs.step);
 
     // -----------------------------------------------------------------------
-    // Link
+    // Link — embed .o files added after cargo (they need iso/boot/ ready)
     // -----------------------------------------------------------------------
+    embed_kernel.step.dependOn(&cargo_kernel.step);
+    embed_devspace.step.dependOn(&cargo_kernel.step);
+    embed_fsserver.step.dependOn(&cargo_kernel.step);
+    embed_userspace.step.dependOn(&cargo_kernel.step);
+
     const link_kernel = b.addSystemCommand(&.{
         "ld",
         "-T",
@@ -120,16 +135,21 @@ pub fn build(b: *std.Build) void {
         build_dir ++ "/ada_audit.o",
         build_dir ++ "/ada_lifecycle.o",
         build_dir ++ "/ada_stubs.o",
+        build_dir ++ "/embed_kernel.o",
+        build_dir ++ "/embed_devspace.o",
+        build_dir ++ "/embed_fsserver.o",
+        build_dir ++ "/embed_userspace.o",
         build_dir ++ "/kernel_target/x86_64-cosinus/release/libkernel.a",
     });
     link_kernel.step.dependOn(&cargo_kernel.step);
     link_kernel.step.dependOn(&nasm_boot.step);
     link_kernel.step.dependOn(&nasm_tramp.step);
     link_kernel.step.dependOn(&nasm_eu.step);
+    link_kernel.step.dependOn(&embed_kernel.step);
+    link_kernel.step.dependOn(&embed_devspace.step);
+    link_kernel.step.dependOn(&embed_fsserver.step);
+    link_kernel.step.dependOn(&embed_userspace.step);
 
-    // -----------------------------------------------------------------------
-    // ISO
-    // -----------------------------------------------------------------------
     const copy_to_iso = b.addSystemCommand(&.{
         "sh", "-c",
         "mkdir -p ../../iso/boot && cp " ++
@@ -138,9 +158,6 @@ pub fn build(b: *std.Build) void {
     copy_to_iso.step.dependOn(&link_kernel.step);
     b.default_step.dependOn(&copy_to_iso.step);
 
-    // -----------------------------------------------------------------------
-    // Clean
-    // -----------------------------------------------------------------------
     const clean = b.step("clean", "Clean kernel");
     const clean_cmd = b.addSystemCommand(&.{
         "rm",                              "-rf",
@@ -148,7 +165,9 @@ pub fn build(b: *std.Build) void {
         build_dir ++ "/enter_userspace.o", build_dir ++ "/bitmap_ops.o",
         build_dir ++ "/slab_hotpath.o",    build_dir ++ "/ada_integrity.o",
         build_dir ++ "/ada_audit.o",       build_dir ++ "/ada_lifecycle.o",
-        build_dir ++ "/ada_stubs.o",       build_dir ++ "/kernel.elf",
+        build_dir ++ "/ada_stubs.o",       build_dir ++ "/embed_kernel.o",
+        build_dir ++ "/embed_devspace.o",  build_dir ++ "/embed_fsserver.o",
+        build_dir ++ "/embed_userspace.o", build_dir ++ "/kernel.elf",
         build_dir ++ "/kernel_target",
     });
     clean.dependOn(&clean_cmd.step);
