@@ -83,7 +83,7 @@ pub extern "C" fn kernel_main(mb_magic: u64, mb_info: u64) -> ! {
             allocator::init();
         }
         debug::log_ok("KernelHeap", true);
-        root_file_system::check_and_install();
+        root_file_system::check_and_install(mb_info);
         perm::init_gdt(); debug::log_ok("GDT", true);
         perm::init_pic(); debug::log_ok("PIC", true);
         perm::init_idt(); asm!("cli", options(nomem, nostack));
