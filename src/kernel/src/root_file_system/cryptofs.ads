@@ -32,9 +32,9 @@ is
    ERR_INVALID    : constant int := -5;
 
    subtype LBA_Type  is Unsigned_64;
-   subtype Key_Bytes is array (0 .. KEY_SIZE  - 1) of Unsigned_8;
-   subtype Tag_Bytes is array (0 .. TAG_SIZE  - 1) of Unsigned_8;
-   subtype Nonce_T   is array (0 .. NONCE_SIZE - 1) of Unsigned_8;
+   type Key_Bytes is array (0 .. KEY_SIZE  - 1) of Unsigned_8;
+   type Tag_Bytes is array (0 .. TAG_SIZE  - 1) of Unsigned_8;
+   type Nonce_T   is array (0 .. NONCE_SIZE - 1) of Unsigned_8;
 
    type Sector_Buffer is array (0 .. SECTOR_SIZE - 1) of Unsigned_8;
 

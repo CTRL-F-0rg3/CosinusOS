@@ -41,7 +41,7 @@ is
 
    subtype LBA_Type     is Unsigned_64;
    subtype Session_Id   is Unsigned_32;
-   subtype Token_Bytes  is array (0 .. TOKEN_SIZE - 1) of Unsigned_8;
+   type Token_Bytes is array (0 .. TOKEN_SIZE - 1) of Unsigned_8;
    subtype Ring_Level   is Unsigned_8 range 0 .. 3;
 
    -- Write permit — authorizes a specific LBA range operation
