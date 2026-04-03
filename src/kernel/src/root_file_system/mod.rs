@@ -1,12 +1,11 @@
 pub mod ata;
 pub mod layout;
 pub mod install;
+
 use layout::{HEADER_LBA, MAGIC};
 use crate::debug::{log_ok, serial_print, print, printc, col};
 
-/// Called from kernel_main after PMM/VMM init.
-/// Checks sector 1 for install header — installs if missing.
-pub fn check_and_install() {
+pub fn check_and_install(mb_info: u64) {
     unsafe {
         serial_print("[rootfs] Checking installation...\n");
 
@@ -28,7 +27,7 @@ pub fn check_and_install() {
         printc("=== Installing CosinusOS to disk ===\n", col::YELLOW);
         serial_print("[rootfs] Not installed, starting...\n");
 
-        match install::run_install() {
+        match install::run_install(mb_info) {
             Ok(res) => {
                 print("[rootfs] kernel:    ");
                 { let mut b = [0u8; 24]; print(crate::debug::num_str(res.kernel_sectors    as usize, &mut b)); }

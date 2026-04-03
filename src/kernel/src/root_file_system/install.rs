@@ -1,33 +1,43 @@
-// Writes kernel.elf, devspace.elf, fs_server.bin, userspace.bin
-// to their respective disk segments, then writes the install header.
-// Called only when installation is not detected.
+// Reads all MB2 modules in order:
+//   module 0 — kernel.elf
+//   module 1 — devspace.elf
+//   module 2 — fs_server.bin
+//   module 3 — userspace.bin
+// Writes each to its disk segment, then writes install header.
 
 use super::ata;
 use super::layout::{
     InstallHeader, MAGIC, HEADER_LBA,
     SEG_KERNEL, SEG_DEVSPACE, SEG_FSSERVER, SEG_USERSPACE,
 };
-use crate::debug::{log_ok, serial_print};
+use crate::debug::serial_print;
 
-// Embedded binaries — included at compile time from build output
-// These are the exact files that would be in iso/boot/
-// The kernel.elf includes itself (bootloader copies it to MB2 module)
+#[repr(C, packed)] struct Mb2Hdr { total: u32, _res: u32 }
+#[repr(C, packed)] struct Mb2Tag { typ: u32, sz: u32 }
+#[repr(C, packed)] struct Mb2Mod { typ: u32, sz: u32, start: u32, end: u32 }
 
-extern "C" {
-    // Symbols injected by linker from MB2 modules or embedded sections
-    // Defined in linker.ld as:
-    //   _binary_kernel_elf_start / _size
-    //   _binary_devspace_elf_start / _size
-    //   _binary_fs_server_bin_start / _size
-    //   _binary_userspace_bin_start / _size
-    static _binary_kernel_elf_start:    u8;
-    static _binary_kernel_elf_size:     usize;
-    static _binary_devspace_elf_start:  u8;
-    static _binary_devspace_elf_size:   usize;
-    static _binary_fs_server_bin_start: u8;
-    static _binary_fs_server_bin_size:  usize;
-    static _binary_userspace_bin_start: u8;
-    static _binary_userspace_bin_size:  usize;
+// Collect up to 4 MB2 modules — returns (start, end) pairs
+unsafe fn collect_modules(info: u64) -> [Option<(u64, u64)>; 4] {
+    let mut out = [None; 4];
+    let mut idx = 0usize;
+
+    if info == 0 { return out; }
+    let total = (*(info as *const Mb2Hdr)).total as u64;
+    let mut off = 8u64;
+
+    while off < total && idx < 4 {
+        let tag = &*((info + off) as *const Mb2Tag);
+        if tag.typ == 0 { break; }
+        if tag.typ == 3 {
+            let m = &*((info + off) as *const Mb2Mod);
+            if m.end > m.start {
+                out[idx] = Some((m.start as u64, m.end as u64));
+                idx += 1;
+            }
+        }
+        off += (tag.sz as u64 + 7) & !7;
+    }
+    out
 }
 
 pub struct InstallResult {
@@ -37,58 +47,48 @@ pub struct InstallResult {
     pub userspace_sectors: u32,
 }
 
-pub unsafe fn run_install() -> Result<InstallResult, ata::AtaError> {
-    serial_print("[rootfs] Starting installation...\n");
+pub unsafe fn run_install(mb_info: u64) -> Result<InstallResult, ata::AtaError> {
+    serial_print("[rootfs] Collecting MB2 modules...\n");
+    let mods = collect_modules(mb_info);
 
-    // --- kernel.elf ---
-    let kernel_data = core::slice::from_raw_parts(
-        &_binary_kernel_elf_start as *const u8,
-        _binary_kernel_elf_size,
-    );
-    serial_print("[rootfs] Writing kernel.elf...\n");
-    let kernel_sectors = ata::write_bytes(
-        SEG_KERNEL.lba_start,
-        kernel_data,
-        SEG_KERNEL.max_sectors,
-    )?;
+    // Write each module to its segment — None or zero-size = skip (0 sectors)
+    let kernel_sectors = match mods[0] {
+        Some((s, e)) => {
+            serial_print("[rootfs] Writing kernel.elf...\n");
+            let data = core::slice::from_raw_parts(s as *const u8, (e - s) as usize);
+            ata::write_bytes(SEG_KERNEL.lba_start, data, SEG_KERNEL.max_sectors)?
+        }
+        None => { serial_print("[rootfs] kernel.elf not found in MB2, skipping\n"); 0 }
+    };
 
-    // --- devspace.elf ---
-    let devspace_data = core::slice::from_raw_parts(
-        &_binary_devspace_elf_start as *const u8,
-        _binary_devspace_elf_size,
-    );
-    serial_print("[rootfs] Writing devspace.elf...\n");
-    let devspace_sectors = ata::write_bytes(
-        SEG_DEVSPACE.lba_start,
-        devspace_data,
-        SEG_DEVSPACE.max_sectors,
-    )?;
+    let devspace_sectors = match mods[1] {
+        Some((s, e)) => {
+            serial_print("[rootfs] Writing devspace.elf...\n");
+            let data = core::slice::from_raw_parts(s as *const u8, (e - s) as usize);
+            ata::write_bytes(SEG_DEVSPACE.lba_start, data, SEG_DEVSPACE.max_sectors)?
+        }
+        None => { serial_print("[rootfs] devspace.elf not found in MB2, skipping\n"); 0 }
+    };
 
-    // --- fs_server.bin ---
-    let fsserver_data = core::slice::from_raw_parts(
-        &_binary_fs_server_bin_start as *const u8,
-        _binary_fs_server_bin_size,
-    );
-    serial_print("[rootfs] Writing fs_server.bin...\n");
-    let fsserver_sectors = ata::write_bytes(
-        SEG_FSSERVER.lba_start,
-        fsserver_data,
-        SEG_FSSERVER.max_sectors,
-    )?;
+    let fsserver_sectors = match mods[2] {
+        Some((s, e)) => {
+            serial_print("[rootfs] Writing fs_server.bin...\n");
+            let data = core::slice::from_raw_parts(s as *const u8, (e - s) as usize);
+            ata::write_bytes(SEG_FSSERVER.lba_start, data, SEG_FSSERVER.max_sectors)?
+        }
+        None => { serial_print("[rootfs] fs_server.bin not found in MB2, skipping\n"); 0 }
+    };
 
-    // --- userspace.bin ---
-    let userspace_data = core::slice::from_raw_parts(
-        &_binary_userspace_bin_start as *const u8,
-        _binary_userspace_bin_size,
-    );
-    serial_print("[rootfs] Writing userspace.bin...\n");
-    let userspace_sectors = ata::write_bytes(
-        SEG_USERSPACE.lba_start,
-        userspace_data,
-        SEG_USERSPACE.max_sectors,
-    )?;
+    let userspace_sectors = match mods[3] {
+        Some((s, e)) => {
+            serial_print("[rootfs] Writing userspace.bin...\n");
+            let data = core::slice::from_raw_parts(s as *const u8, (e - s) as usize);
+            ata::write_bytes(SEG_USERSPACE.lba_start, data, SEG_USERSPACE.max_sectors)?
+        }
+        None => { serial_print("[rootfs] userspace.bin not found in MB2, skipping\n"); 0 }
+    };
 
-    // --- Write install header at sector 1 ---
+    // Write install header
     let header = InstallHeader {
         magic:             MAGIC,
         kernel_lba:        SEG_KERNEL.lba_start,
@@ -109,13 +109,7 @@ pub unsafe fn run_install() -> Result<InstallResult, ata::AtaError> {
     let mut sector_buf = [0u8; 512];
     sector_buf.copy_from_slice(header_bytes);
     ata::write_sector(HEADER_LBA, &sector_buf)?;
-
     serial_print("[rootfs] Install header written.\n");
 
-    Ok(InstallResult {
-        kernel_sectors,
-        devspace_sectors,
-        fsserver_sectors,
-        userspace_sectors,
-    })
+    Ok(InstallResult { kernel_sectors, devspace_sectors, fsserver_sectors, userspace_sectors })
 }
