@@ -15,7 +15,6 @@ pub fn build(b: *std.Build) void {
         "nasm",                    "-f", "elf64",
         "src/enter_userspace.asm", "-o", build_dir ++ "/enter_userspace.o",
     });
-
     const nasm_bitmap = b.addSystemCommand(&.{
         "nasm",                             "-f", "elf64",
         "src/allocator/asm/bitmap_ops.asm", "-o", build_dir ++ "/bitmap_ops.o",
@@ -46,7 +45,6 @@ pub fn build(b: *std.Build) void {
             "gnat compile " ++ ada_flags ++ " lifecycle.adb && " ++
             "mv lifecycle.o " ++ ada_out ++ "/ada_lifecycle.o",
     });
-
     const ada_stubs = b.addSystemCommand(&.{
         "cc",            "-c",                        "-O2",
         "-mno-red-zone", "-mcmodel=large",            "src/allocator/ada/gnat_runtime_stubs.c",
@@ -54,41 +52,49 @@ pub fn build(b: *std.Build) void {
     });
 
     // -----------------------------------------------------------------------
-    // objcopy — embed iso/boot/ binaries into linkable .o files
-    // iso/boot/ files are built by devspace/userspace steps before kernel
-    // kernel.elf embed uses previous build (chicken-and-egg is unavoidable)
+    // objcopy — embed iso/boot/ binaries
+    // -s checks file exists AND non-empty, fallback creates empty .o
     // -----------------------------------------------------------------------
     const embed_kernel = b.addSystemCommand(&.{
         "sh", "-c",
-        "[ -f ../../iso/boot/kernel.elf ] && " ++
-            "objcopy -I binary -O elf64-x86-64 -B i386:x86-64 " ++
-            "../../iso/boot/kernel.elf " ++ build_dir ++ "/embed_kernel.o" ++
-            " || " ++
-            // First build — no kernel.elf yet, create empty placeholder .o
-            "echo '' | as -o " ++ build_dir ++ "/embed_kernel.o --defsym _binary_kernel_elf_start=0 --defsym _binary_kernel_elf_size=0 /dev/stdin 2>/dev/null || true",
+        "f=../../iso/boot/kernel.elf; " ++
+            "if [ -s \"$f\" ]; then " ++
+            "objcopy -I binary -O elf64-x86-64 -B i386:x86-64 \"$f\" " ++ build_dir ++ "/embed_kernel.o; " ++
+            "else " ++
+            "ld -r -b binary -o " ++ build_dir ++ "/embed_kernel.o /dev/null 2>/dev/null || " ++
+            "touch " ++ build_dir ++ "/embed_kernel.o; fi",
     });
     const embed_devspace = b.addSystemCommand(&.{
         "sh", "-c",
-        "[ -f ../../iso/boot/devspace.elf ] && " ++
-            "objcopy -I binary -O elf64-x86-64 -B i386:x86-64 " ++
-            "../../iso/boot/devspace.elf " ++ build_dir ++ "/embed_devspace.o" ++
-            " || true",
+        "f=../../iso/boot/devspace.elf; " ++
+            "if [ -s \"$f\" ]; then " ++
+            "objcopy -I binary -O elf64-x86-64 -B i386:x86-64 \"$f\" " ++ build_dir ++ "/embed_devspace.o; " ++
+            "else " ++
+            "ld -r -b binary -o " ++ build_dir ++ "/embed_devspace.o /dev/null 2>/dev/null || " ++
+            "touch " ++ build_dir ++ "/embed_devspace.o; fi",
     });
     const embed_fsserver = b.addSystemCommand(&.{
         "sh", "-c",
-        "[ -f ../../iso/boot/fs_server.bin ] && " ++
-            "objcopy -I binary -O elf64-x86-64 -B i386:x86-64 " ++
-            "../../iso/boot/fs_server.bin " ++ build_dir ++ "/embed_fsserver.o" ++
-            " || true",
+        "f=../../iso/boot/fs_server.bin; " ++
+            "if [ -s \"$f\" ]; then " ++
+            "objcopy -I binary -O elf64-x86-64 -B i386:x86-64 \"$f\" " ++ build_dir ++ "/embed_fsserver.o; " ++
+            "else " ++
+            "ld -r -b binary -o " ++ build_dir ++ "/embed_fsserver.o /dev/null 2>/dev/null || " ++
+            "touch " ++ build_dir ++ "/embed_fsserver.o; fi",
     });
     const embed_userspace = b.addSystemCommand(&.{
         "sh", "-c",
-        "[ -f ../../iso/boot/userspace.bin ] && " ++
-            "objcopy -I binary -O elf64-x86-64 -B i386:x86-64 " ++
-            "../../iso/boot/userspace.bin " ++ build_dir ++ "/embed_userspace.o" ++
-            " || true",
+        "f=../../iso/boot/userspace.bin; " ++
+            "if [ -s \"$f\" ]; then " ++
+            "objcopy -I binary -O elf64-x86-64 -B i386:x86-64 \"$f\" " ++ build_dir ++ "/embed_userspace.o; " ++
+            "else " ++
+            "ld -r -b binary -o " ++ build_dir ++ "/embed_userspace.o /dev/null 2>/dev/null || " ++
+            "touch " ++ build_dir ++ "/embed_userspace.o; fi",
     });
 
+    // -----------------------------------------------------------------------
+    // Rust kernel
+    // -----------------------------------------------------------------------
     const cargo_kernel = b.addSystemCommand(&.{
         "cargo",           "+nightly",
         "build",           "--release",
@@ -106,14 +112,16 @@ pub fn build(b: *std.Build) void {
     cargo_kernel.step.dependOn(&ada_lifecycle.step);
     cargo_kernel.step.dependOn(&ada_stubs.step);
 
-    // -----------------------------------------------------------------------
-    // Link — embed .o files added after cargo (they need iso/boot/ ready)
-    // -----------------------------------------------------------------------
+    // embed steps run after cargo (iso/boot/ populated by devspace/userspace
+    // builds which happen before kernel in the root build.zig)
     embed_kernel.step.dependOn(&cargo_kernel.step);
     embed_devspace.step.dependOn(&cargo_kernel.step);
     embed_fsserver.step.dependOn(&cargo_kernel.step);
     embed_userspace.step.dependOn(&cargo_kernel.step);
 
+    // -----------------------------------------------------------------------
+    // Link
+    // -----------------------------------------------------------------------
     const link_kernel = b.addSystemCommand(&.{
         "ld",
         "-T",
@@ -150,6 +158,9 @@ pub fn build(b: *std.Build) void {
     link_kernel.step.dependOn(&embed_fsserver.step);
     link_kernel.step.dependOn(&embed_userspace.step);
 
+    // -----------------------------------------------------------------------
+    // Copy to iso
+    // -----------------------------------------------------------------------
     const copy_to_iso = b.addSystemCommand(&.{
         "sh", "-c",
         "mkdir -p ../../iso/boot && cp " ++
@@ -158,6 +169,9 @@ pub fn build(b: *std.Build) void {
     copy_to_iso.step.dependOn(&link_kernel.step);
     b.default_step.dependOn(&copy_to_iso.step);
 
+    // -----------------------------------------------------------------------
+    // Clean
+    // -----------------------------------------------------------------------
     const clean = b.step("clean", "Clean kernel");
     const clean_cmd = b.addSystemCommand(&.{
         "rm",                              "-rf",
