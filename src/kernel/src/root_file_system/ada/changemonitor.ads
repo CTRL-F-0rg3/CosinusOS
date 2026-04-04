@@ -93,15 +93,13 @@ is
    with
       Export        => True,
       Convention    => C,
-      External_Name => "change_monitor_init",
-      Global        => (Output => (State, Journal, Watches));
+      External_Name => "change_monitor_init";
 
    procedure Tick
    with
       Export        => True,
       Convention    => C,
-      External_Name => "change_monitor_tick",
-      Global        => (In_Out => State);
+      External_Name => "change_monitor_tick";
 
    -- Record a write operation — returns ERR_ALERT if suspicious
    function Record_Write
@@ -113,9 +111,7 @@ is
    with
       Export        => True,
       Convention    => C,
-      External_Name => "change_monitor_record_write",
-      Global        => (In_Out => (State, Journal, Watches)),
-      Pre           => Count > 0;
+      External_Name => "change_monitor_record_write";
 
    -- Record a read
    procedure Record_Read
@@ -125,8 +121,7 @@ is
    with
       Export        => True,
       Convention    => C,
-      External_Name => "change_monitor_record_read",
-      Global        => (In_Out => (State, Journal));
+      External_Name => "change_monitor_record_read";
 
    -- Add a watch region
    function Add_Watch
@@ -137,9 +132,7 @@ is
    with
       Export        => True,
       Convention    => C,
-      External_Name => "change_monitor_add_watch",
-      Global        => (In_Out => (State, Watches)),
-      Pre           => LBA_End > LBA_Start;
+      External_Name => "change_monitor_add_watch";
 
    -- Remove a watch region
    function Remove_Watch (LBA_Start : LBA_Type) return int
@@ -168,22 +161,6 @@ is
    with
       Export        => True,
       Convention    => C,
-      External_Name => "change_monitor_dump_journal",
-      Global        => (Input => (State, Journal));
-
-   -- Internal
-   procedure Append_Journal
-      (Entry_Type  : Unsigned_8;
-       Ring        : Ring_Level;
-       LBA         : LBA_Type;
-       Count       : Unsigned_32;
-       Before_Hash : Unsigned_32;
-       After_Hash  : Unsigned_32)
-   with Global => (In_Out => (State, Journal));
-
-   function Check_Burst return Boolean;
-
-   function FNV1a (Data : System.Address; Len : Natural) return Unsigned_32
-   with Global => null;
+      External_Name => "change_monitor_dump_journal";
 
 end ChangeMonitor;

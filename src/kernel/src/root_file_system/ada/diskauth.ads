@@ -96,16 +96,14 @@ is
    with
       Export        => True,
       Convention    => C,
-      External_Name => "disk_auth_init",
-      Global        => (Output => (State, Sessions, Permits));
+      External_Name => "disk_auth_init";
 
    -- Advance internal tick counter (called by kernel timer)
    procedure Tick
    with
       Export        => True,
       Convention    => C,
-      External_Name => "disk_auth_tick",
-      Global        => (In_Out => (State, Sessions));
+      External_Name => "disk_auth_tick";
 
    -- Open a new auth session, returns session ID or negative error
    function Open_Session
@@ -115,9 +113,7 @@ is
    with
       Export        => True,
       Convention    => C,
-      External_Name => "disk_auth_open_session",
-      Global        => (In_Out => (State, Sessions)),
-      Pre           => Token_Len = TOKEN_SIZE;
+      External_Name => "disk_auth_open_session";
 
    -- Close and invalidate a session
    function Close_Session (Id : Session_Id) return int
@@ -133,9 +129,7 @@ is
    with
       Export        => True,
       Convention    => C,
-      External_Name => "disk_auth_issue_permit",
-      Global        => (In_Out => (State, Sessions, Permits)),
-      Pre           => LBA_End > LBA_Start;
+      External_Name => "disk_auth_issue_permit";
 
    -- Check if an LBA write operation has a valid permit
    function Check_Permit
@@ -146,10 +140,7 @@ is
    with
       Export        => True,
       Convention    => C,
-      External_Name => "disk_auth_check_permit",
-      Global        => (In_Out => (State, Permits),
-                        Input  => Sessions),
-      Pre           => Count > 0;
+      External_Name => "disk_auth_check_permit";
 
    -- Revoke all permits for a session
    function Revoke_Session_Permits (Id : Session_Id) return int
@@ -164,7 +155,6 @@ is
       Export        => True,
       Convention    => C,
       External_Name => "disk_auth_admin_permit",
-      Global        => (In_Out => (State, Sessions, Permits)),
       Pre           => LBA_End > LBA_Start;
 
    -- Query active session count

@@ -86,8 +86,7 @@ is
    with
       Export        => True,
       Convention    => C,
-      External_Name => "cryptofs_init",
-      Global        => (Output => (State, Key_Slots));
+      External_Name => "cryptofs_init";
 
    -- Load a key into a slot
    function Load_Key
@@ -100,9 +99,7 @@ is
    with
       Export        => True,
       Convention    => C,
-      External_Name => "cryptofs_load_key",
-      Global        => (In_Out => (State, Key_Slots)),
-      Pre           => Key_Len = KEY_SIZE and Nonce_Len = NONCE_SIZE;
+      External_Name => "cryptofs_load_key";
 
    -- Bind a key to an LBA range
    function Bind_Key_To_Region
@@ -112,9 +109,7 @@ is
    with
       Export        => True,
       Convention    => C,
-      External_Name => "cryptofs_bind_key_region",
-      Global        => (In_Out => Key_Slots),
-      Pre           => LBA_End > LBA_Start;
+      External_Name => "cryptofs_bind_key_region";
 
    -- Encrypt one sector in-place
    function Encrypt_Sector
@@ -124,8 +119,7 @@ is
    with
       Export        => True,
       Convention    => C,
-      External_Name => "cryptofs_encrypt_sector",
-      Global        => (In_Out => (State, Key_Slots));
+      External_Name => "cryptofs_encrypt_sector";
 
    -- Decrypt one sector in-place, verify tag
    function Decrypt_Sector
@@ -135,8 +129,7 @@ is
    with
       Export        => True,
       Convention    => C,
-      External_Name => "cryptofs_decrypt_sector",
-      Global        => (In_Out => (State, Key_Slots));
+      External_Name => "cryptofs_decrypt_sector";
 
    -- Generate a sector authentication tag without encrypting
    function Tag_Sector
@@ -146,8 +139,7 @@ is
    with
       Export        => True,
       Convention    => C,
-      External_Name => "cryptofs_tag_sector",
-      Global        => (In_Out => (State, Key_Slots));
+      External_Name => "cryptofs_tag_sector";
 
    -- Verify sector tag
    function Verify_Tag
@@ -157,9 +149,7 @@ is
    with
       Export        => True,
       Convention    => C,
-      External_Name => "cryptofs_verify_tag",
-      Global        => (In_Out => State,
-                        Input  => Key_Slots);
+      External_Name => "cryptofs_verify_tag";
 
    function Get_Tag_Fail_Count return Unsigned_32
    with

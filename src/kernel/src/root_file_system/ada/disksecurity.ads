@@ -150,8 +150,7 @@ is
    with
       Export        => True,
       Convention    => C,
-      External_Name => "disk_security_init",
-      Global        => (Output => (State, Regions, Keys, Audit));
+      External_Name => "disk_security_init";
 
    function Check_Access
       (LBA        : LBA_Type;
@@ -161,10 +160,7 @@ is
    with
       Export        => True,
       Convention    => C,
-      External_Name => "disk_security_check_access",
-      Global        => (In_Out => (State, Audit),
-                        Input  => Regions),
-      Pre           => Count > 0 and Count <= 65536;
+      External_Name => "disk_security_check_access";
 
    function Register_Region
       (LBA_Start   : LBA_Type;
@@ -175,7 +171,6 @@ is
       Export        => True,
       Convention    => C,
       External_Name => "disk_security_register_region",
-      Global        => (In_Out => (State, Regions)),
       Pre           => LBA_End > LBA_Start
                        and Sec_Level <= 3;
 
@@ -192,9 +187,7 @@ is
    with
       Export        => True,
       Convention    => C,
-      External_Name => "disk_security_unlock_region",
-      Global        => (In_Out => (State, Regions, Audit)),
-      Pre           => Tag_Len = 32;
+      External_Name => "disk_security_unlock_region";
 
    function Set_Content_Hash
       (LBA_Start : LBA_Type;
@@ -203,9 +196,7 @@ is
    with
       Export        => True,
       Convention    => C,
-      External_Name => "disk_security_set_content_hash",
-      Global        => (In_Out => Regions),
-      Pre           => Hash_Len = 32;
+      External_Name => "disk_security_set_content_hash";
 
    function Verify_Region
       (LBA_Start    : LBA_Type;
@@ -214,9 +205,7 @@ is
    with
       Export        => True,
       Convention    => C,
-      External_Name => "disk_security_verify_region",
-      Global        => (In_Out => (State, Audit),
-                        Input  => Regions);
+      External_Name => "disk_security_verify_region";
 
    function Get_Violation_Count return Unsigned_32
    with
