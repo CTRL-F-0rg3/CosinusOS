@@ -1,6 +1,6 @@
 -- CosinusOS CryptoFS Layer
 -- cryptofs.ads — sector-level encryption/decryption and integrity tagging
--- Implements: XOR-stream cipher (placeholder for AES-256-GCM),
+-- Implements: XOR-stream cipher (placeholder for AES-256-GCM);
 --             per-sector HMAC-like tags, key derivation mixing
 
 with Interfaces;   use Interfaces;
@@ -165,10 +165,7 @@ is
    with
       Export        => True,
       Convention    => C,
-      External_Name => "cryptofs_tag_fail_count",
-      Global        => (Input => State);
-
-   -- Internal
+      External_Name => "cryptofs_tag_fail_count";
    function Find_Key_For_LBA (LBA : LBA_Type) return Integer
    with Global => (Input => (State, Key_Slots));
 

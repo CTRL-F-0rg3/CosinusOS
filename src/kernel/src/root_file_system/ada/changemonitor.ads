@@ -146,34 +146,22 @@ is
    with
       Export        => True,
       Convention    => C,
-      External_Name => "change_monitor_remove_watch",
-      Global        => (Output => (State, Watches));
-
-   -- Check if LBA is in any watch region
+      External_Name => "change_monitor_remove_watch";
    function Check_Watch (LBA : LBA_Type) return int
    with
       Export        => True,
       Convention    => C,
-      External_Name => "change_monitor_check_watch",
-      Global        => (Input => (State, Watches));
-
-   -- Get total alert count
+      External_Name => "change_monitor_check_watch";
    function Get_Alert_Count return Unsigned_32
    with
       Export        => True,
       Convention    => C,
-      External_Name => "change_monitor_alert_count",
-      Global        => (Input => State);
-
-   -- Is monitor in hard lock state?
+      External_Name => "change_monitor_alert_count";
    function Is_Hard_Locked return int
    with
       Export        => True,
       Convention    => C,
-      External_Name => "change_monitor_is_locked",
-      Global        => (Input => State);
-
-   -- Get last N journal entries into caller buffer
+      External_Name => "change_monitor_is_locked";
    function Dump_Journal
       (Buffer    : System.Address;
        Max_Count : unsigned) return int
@@ -193,8 +181,7 @@ is
        After_Hash  : Unsigned_32)
    with Global => (In_Out => (State, Journal));
 
-   function Check_Burst return Boolean
-   with Global => (Output => State);
+   function Check_Burst return Boolean;
 
    function FNV1a (Data : System.Address; Len : Natural) return Unsigned_32
    with Global => null;

@@ -124,10 +124,7 @@ is
    with
       Export        => True,
       Convention    => C,
-      External_Name => "disk_auth_close_session",
-      Global        => (Output => (State, Sessions));
-
-   -- Issue a write permit for an LBA range
+      External_Name => "disk_auth_close_session";
    function Issue_Permit
       (Session   : Session_Id;
        LBA_Start : LBA_Type;
@@ -159,10 +156,7 @@ is
    with
       Export        => True,
       Convention    => C,
-      External_Name => "disk_auth_revoke_permits",
-      Global        => (Output => (State, Permits));
-
-   -- Kernel-only: issue an unconditional admin permit (ring 0 only)
+      External_Name => "disk_auth_revoke_permits";
    function Admin_Permit
       (LBA_Start : LBA_Type;
        LBA_End   : LBA_Type) return int
@@ -178,10 +172,7 @@ is
    with
       Export        => True,
       Convention    => C,
-      External_Name => "disk_auth_active_sessions",
-      Global        => (Input => State);
-
-   -- Internal helpers
+      External_Name => "disk_auth_active_sessions";
    function Find_Session (Id : Session_Id) return Integer
    with Global => (Input => (State, Sessions));
 

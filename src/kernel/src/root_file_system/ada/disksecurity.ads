@@ -72,7 +72,7 @@ is
    type HMAC_Tag is array (0 .. 31) of Unsigned_8;
    type AES_Key  is array (0 .. 31) of Unsigned_8;  -- 256-bit
    type Hash_256 is array (0 .. 31) of Unsigned_8;
-   type Nonce_96    is array (0 .. 11) of Unsigned_8;
+   type Nonce_96 is array (0 .. 11) of Unsigned_8;
    type Pad_6_Bytes is array (0 .. 5)  of Unsigned_8;
    type Pad_4_Bytes is array (0 .. 3)  of Unsigned_8;
 
@@ -184,9 +184,7 @@ is
    with
       Export        => True,
       Convention    => C,
-      External_Name => "disk_security_lock_region",
-      Global        => (Output => (State, Regions, Audit));
-
+      External_Name => "disk_security_lock_region";
    function Unlock_Region
       (LBA_Start : LBA_Type;
        Auth_Tag  : System.Address;
@@ -224,27 +222,17 @@ is
    with
       Export        => True,
       Convention    => C,
-      External_Name => "disk_security_get_violation_count",
-      Global        => (Input => State);
-
+      External_Name => "disk_security_get_violation_count";
    function Is_Tampered return int
    with
       Export        => True,
       Convention    => C,
-      External_Name => "disk_security_is_tampered",
-      Global        => (Input => State);
-
+      External_Name => "disk_security_is_tampered";
    procedure Emergency_Lock_All
    with
       Export        => True,
       Convention    => C,
-      External_Name => "disk_security_emergency_lock",
-      Global        => (In_Out => (State, Regions, Audit));
-
-   -- -------------------------------------------------------------------------
-   -- Internal helpers (not exported)
-   -- -------------------------------------------------------------------------
-
+      External_Name => "disk_security_emergency_lock";
    function Find_Region (LBA : LBA_Type) return Integer
    with Global => (Input => (State, Regions));
 
