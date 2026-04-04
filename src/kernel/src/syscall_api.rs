@@ -77,9 +77,18 @@ pub struct TimeInfo {
 pub type SyscallFn = unsafe fn(*mut crate::perm::TF) -> i64;
 
 
+ 
 #[no_mangle]
 pub unsafe fn syscall_dispatch_v2(tf: *mut crate::perm::TF) {
-    let num  = (*tf).rax;
+    let num = (*tf).rax;
+    let cs  = (*tf).cs;
+ 
+    // Policy gate — check before dispatching
+    if let Err(e) = crate::root_policy::check_syscall(num, cs) {
+        (*tf).rax = e as u64;
+        return;
+    }
+ 
     let ret: i64 = match num {
         nr::EXIT        => sys_exit(tf),
         nr::WRITE       => sys_write(tf),
