@@ -125,7 +125,7 @@ is
       Export        => True,
       Convention    => C,
       External_Name => "disk_auth_close_session",
-      Global        => (In_Out => (State, Sessions));
+      Global        => (Output => (State, Sessions));
 
    -- Issue a write permit for an LBA range
    function Issue_Permit
@@ -160,7 +160,7 @@ is
       Export        => True,
       Convention    => C,
       External_Name => "disk_auth_revoke_permits",
-      Global        => (In_Out => (State, Permits));
+      Global        => (Output => (State, Permits));
 
    -- Kernel-only: issue an unconditional admin permit (ring 0 only)
    function Admin_Permit

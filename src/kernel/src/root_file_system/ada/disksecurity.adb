@@ -163,7 +163,7 @@ is
       Audit (Idx).Result_Code := Result;
       Audit (Idx).LBA         := LBA;
       Audit (Idx).Count       := Count;
-      Audit (Idx).Timestamp   := State.Boot_Count;  -- tick proxy
+      Audit (Idx).Timestamp   := Unsigned_64 (State.Boot_Count);  -- tick proxy
       Audit (Idx).Caller_Hash := 0;
 
       -- Advance head with wrap
@@ -335,7 +335,7 @@ is
 
       -- Emergency lock — nothing passes
       if State.Lock_All then
-         Log_Audit (OP_VIOLATION, Ring, 255, Unsigned_8 (ERR_LOCKED and 16#FF#), LBA, Count);
+         Log_Audit (OP_VIOLATION, Ring, 255, 16#FF#, LBA, Count);
          State.Violation_Count := State.Violation_Count + 1;
          return ERR_LOCKED;
       end if;
@@ -352,7 +352,7 @@ is
       -- No region = unrestricted data area, reads allowed, writes from ring 0
       if Reg_Idx = -1 then
          if Operation = OP_WRITE and Ring > 0 then
-            Log_Audit (OP_VIOLATION, Ring, 255, Unsigned_8 (ERR_PERMISSION and 16#FF#), LBA, Count);
+            Log_Audit (OP_VIOLATION, Ring, 255, 16#FF#, LBA, Count);
             State.Violation_Count := State.Violation_Count + 1;
             return ERR_PERMISSION;
          end if;
@@ -363,14 +363,14 @@ is
       -- Validate descriptor integrity
       if not Verify_Descriptor (Regions (Reg_Idx)) then
          State.Tamper_Detected := True;
-         Log_Audit (OP_VIOLATION, Ring, Unsigned_8 (Reg_Idx), Unsigned_8 (ERR_TAMPER and 16#FF#), LBA, Count);
+         Log_Audit (OP_VIOLATION, Ring, Unsigned_8 (Reg_Idx), 16#FF#, LBA, Count);
          State.Violation_Count := State.Violation_Count + 1;
          return ERR_TAMPER;
       end if;
 
       -- Check range doesn't cross region boundary
       if LBA_End > Regions (Reg_Idx).LBA_End then
-         Log_Audit (OP_VIOLATION, Ring, Unsigned_8 (Reg_Idx), Unsigned_8 (ERR_BOUNDS and 16#FF#), LBA, Count);
+         Log_Audit (OP_VIOLATION, Ring, Unsigned_8 (Reg_Idx), 16#FF#, LBA, Count);
          State.Violation_Count := State.Violation_Count + 1;
          return ERR_BOUNDS;
       end if;
@@ -378,7 +378,7 @@ is
       -- Check locked flag
       if (Regions (Reg_Idx).Flags and 16#0001#) /= 0 then
          if Operation = OP_WRITE then
-            Log_Audit (OP_VIOLATION, Ring, Unsigned_8 (Reg_Idx), Unsigned_8 (ERR_LOCKED and 16#FF#), LBA, Count);
+            Log_Audit (OP_VIOLATION, Ring, Unsigned_8 (Reg_Idx), 16#FF#, LBA, Count);
             State.Violation_Count := State.Violation_Count + 1;
             return ERR_LOCKED;
          end if;
@@ -389,7 +389,7 @@ is
          when LEVEL_LOCKED =>
             if Operation = OP_WRITE then
                Log_Audit (OP_VIOLATION, Ring, Unsigned_8 (Reg_Idx),
-                          Unsigned_8 (ERR_LOCKED and 16#FF#), LBA, Count);
+                          16#FF#, LBA, Count);
                State.Violation_Count := State.Violation_Count + 1;
                return ERR_LOCKED;
             end if;
@@ -397,7 +397,7 @@ is
          when LEVEL_KERNEL_ONLY =>
             if Ring > 0 and Operation = OP_WRITE then
                Log_Audit (OP_VIOLATION, Ring, Unsigned_8 (Reg_Idx),
-                          Unsigned_8 (ERR_PERMISSION and 16#FF#), LBA, Count);
+                          16#FF#, LBA, Count);
                State.Violation_Count := State.Violation_Count + 1;
                return ERR_PERMISSION;
             end if;
@@ -406,7 +406,7 @@ is
             -- Writes require ring 0 — signature check is done in DiskAuth
             if Ring > 0 and Operation = OP_WRITE then
                Log_Audit (OP_VIOLATION, Ring, Unsigned_8 (Reg_Idx),
-                          Unsigned_8 (ERR_AUTH_FAIL and 16#FF#), LBA, Count);
+                          16#FF#, LBA, Count);
                State.Violation_Count := State.Violation_Count + 1;
                return ERR_AUTH_FAIL;
             end if;
@@ -474,11 +474,11 @@ is
       if Tag_Hash /= Stored_Hash then
          State.Violation_Count := State.Violation_Count + 1;
          Log_Audit (OP_VIOLATION, 0, Unsigned_8 (Idx),
-                    Unsigned_8 (ERR_AUTH_FAIL and 16#FF#), LBA_Start, 0);
+                    16#FF#, LBA_Start, 0);
          return ERR_AUTH_FAIL;
       end if;
 
-      Regions (Idx).Flags := Regions (Idx).Flags and (not 16#0001#);
+      Regions (Idx).Flags := Regions (Idx).Flags and (not Unsigned_16'(16#0001#));
       Regions (Idx).Checksum := CRC32_Region (Regions (Idx));
       Log_Audit (OP_UNLOCK, 0, Unsigned_8 (Idx), 0, LBA_Start, 0);
       return ERR_OK;

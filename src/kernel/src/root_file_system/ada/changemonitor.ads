@@ -147,7 +147,7 @@ is
       Export        => True,
       Convention    => C,
       External_Name => "change_monitor_remove_watch",
-      Global        => (In_Out => (State, Watches));
+      Global        => (Output => (State, Watches));
 
    -- Check if LBA is in any watch region
    function Check_Watch (LBA : LBA_Type) return int
@@ -194,7 +194,7 @@ is
    with Global => (In_Out => (State, Journal));
 
    function Check_Burst return Boolean
-   with Global => (In_Out => State);
+   with Global => (Output => State);
 
    function FNV1a (Data : System.Address; Len : Natural) return Unsigned_32
    with Global => null;

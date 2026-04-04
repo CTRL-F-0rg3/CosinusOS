@@ -72,9 +72,9 @@ is
    type HMAC_Tag is array (0 .. 31) of Unsigned_8;
    type AES_Key  is array (0 .. 31) of Unsigned_8;  -- 256-bit
    type Hash_256 is array (0 .. 31) of Unsigned_8;
-   type Nonce_96 is array (0 .. 11) of Unsigned_8;
-   type Pad_6_Bytes is array (0 .. 5) of Unsigned_8;
-   type Pad_4_Bytes is array (0 .. 3) of Unsigned_8;
+   type Nonce_96    is array (0 .. 11) of Unsigned_8;
+   type Pad_6_Bytes is array (0 .. 5)  of Unsigned_8;
+   type Pad_4_Bytes is array (0 .. 3)  of Unsigned_8;
 
    -- Disk region descriptor — one per protected segment
    type Region_Descriptor is record
@@ -185,7 +185,7 @@ is
       Export        => True,
       Convention    => C,
       External_Name => "disk_security_lock_region",
-      Global        => (In_Out => (State, Regions, Audit));
+      Global        => (Output => (State, Regions, Audit));
 
    function Unlock_Region
       (LBA_Start : LBA_Type;

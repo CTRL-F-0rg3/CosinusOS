@@ -139,7 +139,7 @@ is
             Remaining : constant Natural := Len mod 8;
             Last_Off  : constant Natural := Full_Blocks * 8;
          begin
-            Acc := Shift_Left (Unsigned_64 (Len and 16#FF#), 56);
+            Acc := Shift_Left (Unsigned_64 (Len mod 256), 56);
             for J in 0 .. Remaining - 1 loop
                Acc := Acc or Shift_Left (Unsigned_64 (B (Last_Off + J)), J * 8);
             end loop;
