@@ -102,71 +102,7 @@ extern ada_result_t cryptofs_verify_tag(lba_t lba, const void *buf,
                                          const void *tag);
 extern uint32_t     cryptofs_tag_fail_count(void);
 
-/* ============================================================
- * GNAT runtime stubs — kernel has no libc
- * ============================================================ */
-
-/* Ada elaboration expects __gnat_rcheck_* for runtime checks.
- * In SPARK mode with all checks suppressed these should not be called,
- * but we provide stubs to satisfy the linker. */
-
-void __gnat_rcheck_CE_Range_Check(const char *f, int l) {
-    (void)f; (void)l;
-    /* In kernel: halt — range check failure is fatal */
-    __asm__ volatile ("cli; hlt");
-    __builtin_unreachable();
-}
-
-void __gnat_rcheck_CE_Overflow_Check(const char *f, int l) {
-    (void)f; (void)l;
-    __asm__ volatile ("cli; hlt");
-    __builtin_unreachable();
-}
-
-void __gnat_rcheck_CE_Access_Check(const char *f, int l) {
-    (void)f; (void)l;
-    __asm__ volatile ("cli; hlt");
-    __builtin_unreachable();
-}
-
-void __gnat_rcheck_CE_Null_Exception_Id(const char *f, int l) {
-    (void)f; (void)l;
-    __asm__ volatile ("cli; hlt");
-    __builtin_unreachable();
-}
-
-void __gnat_rcheck_PE_Explicit_Raise(const char *f, int l) {
-    (void)f; (void)l;
-    __asm__ volatile ("cli; hlt");
-    __builtin_unreachable();
-}
-
-void __gnat_rcheck_00(const char *f, int l) { (void)f; (void)l; }
-void __gnat_rcheck_01(const char *f, int l) { (void)f; (void)l; }
-void __gnat_rcheck_02(const char *f, int l) { (void)f; (void)l; }
-void __gnat_rcheck_03(const char *f, int l) { (void)f; (void)l; }
-void __gnat_rcheck_04(const char *f, int l) { (void)f; (void)l; }
-void __gnat_rcheck_05(const char *f, int l) { (void)f; (void)l; }
-void __gnat_rcheck_06(const char *f, int l) { (void)f; (void)l; }
-void __gnat_rcheck_07(const char *f, int l) { (void)f; (void)l; }
-void __gnat_rcheck_08(const char *f, int l) { (void)f; (void)l; }
-void __gnat_rcheck_09(const char *f, int l) { (void)f; (void)l; }
-void __gnat_rcheck_10(const char *f, int l) { (void)f; (void)l; }
-void __gnat_rcheck_11(const char *f, int l) { (void)f; (void)l; }
-void __gnat_rcheck_12(const char *f, int l) { (void)f; (void)l; }
-void __gnat_rcheck_13(const char *f, int l) { (void)f; (void)l; }
-void __gnat_rcheck_14(const char *f, int l) { (void)f; (void)l; }
-void __gnat_rcheck_15(const char *f, int l) { (void)f; (void)l; }
-void __gnat_rcheck_16(const char *f, int l) { (void)f; (void)l; }
-
-/* Ada's "last chance handler" — called on unhandled exception */
-void __gnat_last_chance_handler(const char *msg, int line) {
-    (void)msg; (void)line;
-    __asm__ volatile ("cli; hlt");
-    __builtin_unreachable();
-}
-
-/* ============================================================
+/* ==============================================================
  * FNV-1a 32-bit — used in glue layer for before/after hashes
  * ============================================================ */
 

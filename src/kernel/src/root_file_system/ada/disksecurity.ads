@@ -72,7 +72,7 @@ is
    type HMAC_Tag is array (0 .. 31) of Unsigned_8;
    type AES_Key  is array (0 .. 31) of Unsigned_8;  -- 256-bit
    type Hash_256 is array (0 .. 31) of Unsigned_8;
-   type Nonce_96 is array (0 .. 11) of Unsigned_8;
+   type Nonce_96    is array (0 .. 11) of Unsigned_8;
    type Pad_6_Bytes is array (0 .. 5)  of Unsigned_8;
    type Pad_4_Bytes is array (0 .. 3)  of Unsigned_8;
 
@@ -90,8 +90,7 @@ is
       Write_Count  : Unsigned_64;      -- monotonic write counter
       Last_Writer  : Ring_Level;
       Pad         : Pad_6_Bytes;
-   end record
-   with Size => 512, Alignment => 8;  -- exactly one sector
+   end record;  -- exactly one sector
 
    -- Key slot — holds encryption/auth key material
    type Key_Slot is record
@@ -104,8 +103,7 @@ is
       Nonce       : Nonce_96;
       Generation  : Unsigned_32;
       Pad        : Pad_4_Bytes;
-   end record
-   with Size => 512, Alignment => 8;
+   end record;
 
    -- Audit log entry
    type Audit_Entry is record
@@ -117,8 +115,7 @@ is
       LBA         : LBA_Type;
       Count       : Unsigned_32;
       Caller_Hash : Unsigned_32;   -- hash of caller identity
-   end record
-   with Size => 192, Alignment => 8;
+   end record;
 
    -- Global security state
    type Security_State is record
@@ -150,7 +147,8 @@ is
    with
       Export        => True,
       Convention    => C,
-      External_Name => "disk_security_init";
+      External_Name => "disk_security_init",
+      Global        => (Output => (State, Regions, Keys, Audit));
 
    function Check_Access
       (LBA        : LBA_Type;
@@ -161,6 +159,7 @@ is
       Export        => True,
       Convention    => C,
       External_Name => "disk_security_check_access";
+
 
    function Register_Region
       (LBA_Start   : LBA_Type;
@@ -180,14 +179,6 @@ is
       Export        => True,
       Convention    => C,
       External_Name => "disk_security_lock_region";
-   function Unlock_Region
-      (LBA_Start : LBA_Type;
-       Auth_Tag  : System.Address;
-       Tag_Len   : unsigned) return int
-   with
-      Export        => True,
-      Convention    => C,
-      External_Name => "disk_security_unlock_region";
 
    function Set_Content_Hash
       (LBA_Start : LBA_Type;
@@ -196,7 +187,8 @@ is
    with
       Export        => True,
       Convention    => C,
-      External_Name => "disk_security_set_content_hash";
+      External_Name => "disk_security_set_content_hash",
+      Pre           => Hash_Len = 32;
 
    function Verify_Region
       (LBA_Start    : LBA_Type;
@@ -207,21 +199,42 @@ is
       Convention    => C,
       External_Name => "disk_security_verify_region";
 
+
+   function Unlock_Region
+      (LBA_Start : LBA_Type;
+       Auth_Tag  : System.Address;
+       Tag_Len   : unsigned) return int
+   with
+      Export        => True,
+      Convention    => C,
+      External_Name => "disk_security_unlock_region";
+
+
    function Get_Violation_Count return Unsigned_32
    with
       Export        => True,
       Convention    => C,
-      External_Name => "disk_security_get_violation_count";
+      External_Name => "disk_security_get_violation_count",
+      Global        => (Input => State);
+
    function Is_Tampered return int
    with
       Export        => True,
       Convention    => C,
-      External_Name => "disk_security_is_tampered";
+      External_Name => "disk_security_is_tampered",
+      Global        => (Input => State);
+
    procedure Emergency_Lock_All
    with
       Export        => True,
       Convention    => C,
-      External_Name => "disk_security_emergency_lock";
+      External_Name => "disk_security_emergency_lock",
+      Global        => (In_Out => (State, Regions, Audit));
+
+   -- -------------------------------------------------------------------------
+   -- Internal helpers (not exported)
+   -- -------------------------------------------------------------------------
+
    function Find_Region (LBA : LBA_Type) return Integer
    with Global => (Input => (State, Regions));
 
