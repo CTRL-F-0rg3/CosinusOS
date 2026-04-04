@@ -42,6 +42,7 @@ is
    subtype LBA_Type     is Unsigned_64;
    subtype Session_Id   is Unsigned_32;
    type Token_Bytes is array (0 .. TOKEN_SIZE - 1) of Unsigned_8;
+   type Pad_2_Bytes is array (0 .. 1) of Unsigned_8;
    subtype Ring_Level   is Unsigned_8 range 0 .. 3;
 
    -- Write permit — authorizes a specific LBA range operation
@@ -70,7 +71,7 @@ is
       Token        : Token_Bytes;
       Permit_Count : Unsigned_8;
       Write_Count  : Unsigned_32;
-      Pad         : array (0 .. 1) of Unsigned_8;
+      Pad         : Pad_2_Bytes;
    end record;
 
    -- Global auth state

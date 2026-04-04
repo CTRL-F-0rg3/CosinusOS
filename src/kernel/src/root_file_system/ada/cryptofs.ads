@@ -37,6 +37,7 @@ is
    type Nonce_T   is array (0 .. NONCE_SIZE - 1) of Unsigned_8;
 
    type Sector_Buffer is array (0 .. SECTOR_SIZE - 1) of Unsigned_8;
+   type Pad_4_Bytes   is array (0 .. 3) of Unsigned_8;
 
    -- Per-sector crypto header — prepended to encrypted sectors on disk
    -- (stored out-of-band in practice, here kept simple for kernel use)
@@ -61,7 +62,7 @@ is
       LBA_Bound_End   : LBA_Type;
       Use_Count : Unsigned_64;
       Checksum  : Unsigned_32;
-      Pad      : array (0 .. 3) of Unsigned_8;
+      Pad      : Pad_4_Bytes;
    end record
    with Alignment => 8;
 

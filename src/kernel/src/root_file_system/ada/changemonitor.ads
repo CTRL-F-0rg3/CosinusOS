@@ -37,6 +37,7 @@ is
 
    subtype LBA_Type   is Unsigned_64;
    subtype Ring_Level is Unsigned_8 range 0 .. 3;
+   type Pad_2_Bytes is array (0 .. 1) of Unsigned_8;
 
    -- One journal entry — records a disk mutation event
    type Journal_Entry is record
@@ -63,7 +64,7 @@ is
       Alert_Count : Unsigned_32;
       Active      : Boolean;
       Strict      : Boolean;  -- strict=True means any write triggers alert
-      Pad        : array (0 .. 1) of Unsigned_8;
+      Pad        : Pad_2_Bytes;
    end record;
 
    -- Monitor state

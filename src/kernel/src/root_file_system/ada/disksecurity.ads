@@ -73,6 +73,8 @@ is
    type AES_Key  is array (0 .. 31) of Unsigned_8;  -- 256-bit
    type Hash_256 is array (0 .. 31) of Unsigned_8;
    type Nonce_96 is array (0 .. 11) of Unsigned_8;
+   type Pad_6_Bytes is array (0 .. 5) of Unsigned_8;
+   type Pad_4_Bytes is array (0 .. 3) of Unsigned_8;
 
    -- Disk region descriptor — one per protected segment
    type Region_Descriptor is record
@@ -87,7 +89,7 @@ is
       Content_Hash : Hash_256;         -- SHA-256 of region content at install time
       Write_Count  : Unsigned_64;      -- monotonic write counter
       Last_Writer  : Ring_Level;
-      Pad         : array (0 .. 5) of Unsigned_8;
+      Pad         : Pad_6_Bytes;
    end record
    with Size => 512, Alignment => 8;  -- exactly one sector
 
@@ -101,7 +103,7 @@ is
       Auth_Tag    : HMAC_Tag;
       Nonce       : Nonce_96;
       Generation  : Unsigned_32;
-      Pad        : array (0 .. 3) of Unsigned_8;
+      Pad        : Pad_4_Bytes;
    end record
    with Size => 512, Alignment => 8;
 
