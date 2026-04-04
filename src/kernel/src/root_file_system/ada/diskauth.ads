@@ -70,7 +70,7 @@ is
       Token        : Token_Bytes;
       Permit_Count : Unsigned_8;
       Write_Count  : Unsigned_32;
-      _Pad         : array (0 .. 1) of Unsigned_8;
+      Pad         : array (0 .. 1) of Unsigned_8;
    end record;
 
    -- Global auth state

@@ -308,7 +308,7 @@ is
          Regions (Idx).Content_Hash (J) := 0;
       end loop;
       for J in 0 .. 5 loop
-         Regions (Idx)._Pad (J) := 0;
+         Regions (Idx).Pad (J) := 0;
       end loop;
       Regions (Idx).Checksum := CRC32_Region (Regions (Idx));
 

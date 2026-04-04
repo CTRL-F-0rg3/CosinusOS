@@ -61,7 +61,7 @@ is
       LBA_Bound_End   : LBA_Type;
       Use_Count : Unsigned_64;
       Checksum  : Unsigned_32;
-      _Pad      : array (0 .. 3) of Unsigned_8;
+      Pad      : array (0 .. 3) of Unsigned_8;
    end record
    with Alignment => 8;
 

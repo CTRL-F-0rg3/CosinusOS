@@ -63,7 +63,7 @@ is
       Alert_Count : Unsigned_32;
       Active      : Boolean;
       Strict      : Boolean;  -- strict=True means any write triggers alert
-      _Pad        : array (0 .. 1) of Unsigned_8;
+      Pad        : array (0 .. 1) of Unsigned_8;
    end record;
 
    -- Monitor state

@@ -261,7 +261,7 @@ is
       Watches (Idx).Active        := True;
       Watches (Idx).Strict        := Strict /= 0;
       for J in 0 .. 1 loop
-         Watches (Idx)._Pad (J) := 0;
+         Watches (Idx).Pad (J) := 0;
       end loop;
 
       State.Watch_Count := State.Watch_Count + 1;

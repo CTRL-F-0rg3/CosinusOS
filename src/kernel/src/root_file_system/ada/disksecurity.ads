@@ -87,7 +87,7 @@ is
       Content_Hash : Hash_256;         -- SHA-256 of region content at install time
       Write_Count  : Unsigned_64;      -- monotonic write counter
       Last_Writer  : Ring_Level;
-      _Pad         : array (0 .. 5) of Unsigned_8;
+      Pad         : array (0 .. 5) of Unsigned_8;
    end record
    with Size => 512, Alignment => 8;  -- exactly one sector
 
@@ -101,7 +101,7 @@ is
       Auth_Tag    : HMAC_Tag;
       Nonce       : Nonce_96;
       Generation  : Unsigned_32;
-      _Pad        : array (0 .. 3) of Unsigned_8;
+      Pad        : array (0 .. 3) of Unsigned_8;
    end record
    with Size => 512, Alignment => 8;
 
