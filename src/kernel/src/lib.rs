@@ -101,8 +101,8 @@ pub extern "C" fn kernel_main(mb_magic: u64, mb_info: u64) -> ! {
         debug::log_ok("USB", usb_ok);
         if usb_ok { spawn_k("usb\0", usb::usb_thread as *const () as u64, 0); }
         spawn_k("kterminal\0", kterminal::run as *const () as u64, 0);
-        debug::log_ok("kterminal", true):
-        debug::log_ok("KernelHeap", true):
+        debug::log_ok("kterminal", true);
+        debug::log_ok("KernelHeap", true);
         crate::root_policy::init();
 
         print("\n"); printc("=== Userspace ===\n", col::YELLOW);
