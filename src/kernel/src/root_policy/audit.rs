@@ -106,9 +106,9 @@ impl PolicyLog {
         serial_print("[POLICY] ");
         serial_print(kind.as_str());
         serial_print(" ring=");
-        { let mut b = [0u8; 4]; serial_print(num_str(ring as usize, &mut b)); }
+        { let mut b = [0u8; 24]; serial_print(num_str(ring as usize, &mut b)); }
         serial_print(" tid=");
-        { let mut b = [0u8; 8]; serial_print(num_str(tid as usize, &mut b)); }
+        { let mut b = [0u8; 24]; serial_print(num_str(tid as usize, &mut b)); }
         serial_print(" detail=");
         { let mut b = [0u8; 18]; serial_print(hex_str(detail, &mut b)); }
         serial_print("\n");
@@ -131,15 +131,15 @@ impl PolicyLog {
             serial_print("] ");
             serial_print(e.kind.as_str());
             serial_print(" ring=");
-            { let mut b = [0u8; 4]; serial_print(num_str(e.ring as usize, &mut b)); }
+            { let mut b = [0u8; 24]; serial_print(num_str(e.ring as usize, &mut b)); }
             serial_print(" tid=");
-            { let mut b = [0u8; 8]; serial_print(num_str(e.tid as usize, &mut b)); }
+            { let mut b = [0u8; 24]; serial_print(num_str(e.tid as usize, &mut b)); }
             serial_print(" detail=");
             { let mut b = [0u8; 18]; serial_print(hex_str(e.detail, &mut b)); }
             serial_print("\n");
         }
         serial_print("[POLICY] total=");
-        { let mut b = [0u8; 12]; serial_print(num_str(self.total as usize, &mut b)); }
+        { let mut b = [0u8; 24]; serial_print(num_str(self.total as usize, &mut b)); }
         serial_print("\n");
     }
 
