@@ -13,12 +13,12 @@ pub mod policy;
 pub mod thread_cap;
 pub mod audit;
 
-use policy::{RingCaps, RING_CAPS};
-use thread_cap::{ThreadCap, CAP_TABLE};
+use policy::RING_CAPS;
+use thread_cap::CAP_TABLE;
 use audit::PolicyLog;
 
 use crate::syscall_api::err;
-use crate::threading::{THREADS, CUR};
+use crate::threading::CUR;
 use core::sync::atomic::Ordering;
 
 // ── Global policy state ───────────────────────────────────────────────────────
