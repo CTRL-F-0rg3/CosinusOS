@@ -106,7 +106,7 @@ Major milestones will shift to `1.x.x` once the core ecosystem reaches productio
 
 ---
 
-## 💬 Community & Support
+##  Community & Support
 
 -  **Bug Reports & Features:** [GitHub Issues](https://github.com/Ctrl-F-0rg3/CosinusOS/issues)
 -  **Discussions:** Join our [Reddit Community](https://www.reddit.com/r/CosinusOS/) 
