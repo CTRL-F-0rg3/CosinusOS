@@ -83,7 +83,7 @@ impl PolicyLog {
         }
     }
 
-    pub fn record(
+    pub unsafe fn record(
         &mut self,
         kind:   ViolationKind,
         ring:   u8,
@@ -119,7 +119,7 @@ impl PolicyLog {
     }
 
     /// Dump the most recent `n` entries to serial output.
-    pub fn dump_recent(&self, n: usize) {
+    pub unsafe fn dump_recent(&self, n: usize) {
         let count = n.min(self.total as usize).min(MAX_LOG_ENTRIES);
         serial_print("[POLICY] === recent violations ===\n");
         for i in 0..count {
@@ -144,7 +144,7 @@ impl PolicyLog {
     }
 
     /// Clear the log.
-    pub fn clear(&mut self) {
+    pub unsafe fn clear(&mut self) {
         for e in self.entries.iter_mut() {
             *e = LogEntry::empty();
         }
