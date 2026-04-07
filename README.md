@@ -82,12 +82,12 @@ The following tools are functional and integrated or pending full integration. N
 
 | Tool | Category | Status | Notes |
 |------|----------|--------|-------|
-| **Brass Engine** | Game Dev | ✅ Ready | Vulkan-optimized engine for Cosinus OS |
-| **VCCat Browser** | Web | ✅ Ready | Replaces VC Browser. Security & privacy focused |
-| **Grid UI** | Interface | ✅ Integrated | Tile-based desktop environment (part of main repo) |
-| **Sinpr** | Core Language | 🔜 In Dev | Proprietary low-level language. Public repo planned. |
-| **OrbitMesh** | Distribution | 🔒 Closed | P2P versioning/distribution system. Proprietary for security. |
-| **PXD Editor** | Creative | ⚠️ Deprecated | Replaced by OrbitMesh pipeline. |
+| **Brass Engine** | Game Dev |  Ready | Vulkan-optimized engine for Cosinus OS |
+| **VCCat Browser** | Web |  Ready | Replaces VC Browser. Security & privacy focused |
+| **Grid UI** | Interface |  Integrated | Tile-based desktop environment (part of main repo) |
+| **Sinpr** | Core Language |  In Dev | Proprietary low-level language. Public repo planned. |
+| **OrbitMesh** | Distribution |  Closed | P2P versioning/distribution system. Proprietary for security. |
+| **PXD Editor** | Creative |  Deprecated | Replaced by OrbitMesh pipeline. |
 
 >  **Note on Licensing & Source:** Core kernel, drivers, and `Grid UI` are open. `Sinpr` and `OrbitMesh` remain closed-source to ensure security, stability, and controlled distribution. `Sinpr` will receive a public repository in a future release.
 
