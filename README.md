@@ -108,8 +108,8 @@ Major milestones will shift to `1.x.x` once the core ecosystem reaches productio
 
 ## 💬 Community & Support
 
--  **Bug Reports & Features:** [GitHub Issues](https://github.com/yourusername/cosinus-os/issues)
--  **Discussions:** Join our [Reddit Community](https://reddit.com/r/cosinusos) *(replace with actual link)*
+-  **Bug Reports & Features:** [GitHub Issues](https://github.com/Ctrl-F-0rg3/CosinusOS/issues)
+-  **Discussions:** Join our [Reddit Community](https://www.reddit.com/r/CosinusOS/) 
 
 >  **Disclaimer:** This is an independent, community-driven project. Do not use for critical production workloads yet.
 
