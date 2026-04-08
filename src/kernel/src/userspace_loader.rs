@@ -58,8 +58,6 @@ unsafe fn load_flat(src: *const u8, size: usize) -> bool {
     for i in 0..pages {
         let phys = mm_alloc();
         if phys == 0 { return false; }
-        // RX for code: no PTE_W on leaf, but readable+user
-        // If your binary needs writable data mixed with code use PTE_W|PTE_U
         vmap(cr3, BIN_BASE + i as u64 * PAGE_SIZE as u64, phys, PTE_U);
         let dst = phys as *mut u8;
         let n   = core::cmp::min(PAGE_SIZE, size - i * PAGE_SIZE);
@@ -113,7 +111,6 @@ unsafe fn load_elf64(elf: *const u8, _sz: usize) -> bool {
         // Respect ELF segment flags: PF_W=0x2, PF_X=0x1, PF_R=0x4
         let mut perm = PTE_U;
         if p_flags & 0x2 != 0 { perm |= PTE_W; }
-        // Note: x86-64 NX bit is not set here; add PTE_NX (bit 63) for W^X if needed
 
         let seg_start = (load_base + p_vaddr) & !(PAGE_SIZE as u64 - 1);
         let seg_end   = (load_base + p_vaddr + p_memsz + PAGE_SIZE as u64 - 1)
@@ -163,12 +160,24 @@ unsafe fn spawn_and_report(entry: u64, cr3: PhysAddr) -> bool {
         let phys = mm_alloc();
         if phys == 0 { return false; }
         core::ptr::write_bytes(phys as *mut u8, 0, PAGE_SIZE);
-        // Fresh address — no stale leaf PTEs from K_P4 here
         vmap(cr3, STACK_BASE + p as u64 * PAGE_SIZE as u64, phys, PTE_W | PTE_U);
     }
 
-    // RSP must be 16-byte aligned; point to top of last mapped page
-    let stack_top = (STACK_BASE + STACK_PAGES as u64 * PAGE_SIZE as u64) & !0xF;
+    // Zmapowany region: STACK_BASE .. STACK_BASE + STACK_PAGES*PAGE_SIZE - 1
+    // czyli 0x00007F0000000000 .. 0x00007F000003FFFF  (64 stron × 4 KB)
+    //
+    // RSP musi wskazywać WEWNĄTRZ zmapowanego regionu.
+    // System V AMD64 ABI: przy wejściu do _start wartość pod [rsp] musi być
+    // dostępna (tam leży argc). Ustawiamy RSP na ostatnie 16 bajtów ostatniej
+    // zmapowanej strony — 0x00007F000003FFF0.
+    //
+    // BŁĄD którego unikamy:
+    //   stack_top = STACK_BASE + STACK_PAGES * PAGE_SIZE  →  0x00007F0000040000
+    //   To jest pierwszy adres ZA regionem — pierwsze odwołanie do [rsp]
+    //   trafia poza mapowanie i daje natychmiastowy #PF.
+    let stack_top = STACK_BASE
+        + STACK_PAGES as u64 * PAGE_SIZE as u64
+        - 16; // zostajemy wewnątrz ostatniej strony, wyrównanie 16 B (ABI)
 
     US_ENTRY = entry;
     US_STACK = stack_top;
