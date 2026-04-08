@@ -9,25 +9,32 @@ pub fn build(b: *std.Build) void {
     const iso_root = "iso";
 
     // ── 1. Kernel ─────────────────────────────────────────────────────────────
+    // Kernel kompiluje się PIERWSZY — wszystko inne zależy od tego kroku.
     const kernel_step = b.step("kernel", "Build kernel");
     const build_kernel = b.addSystemCommand(&.{
         "sh", "-c", "mkdir -p build && cd src/kernel && zig build",
     });
     kernel_step.dependOn(&build_kernel.step);
 
-    // ── 2. Userspace (init process + FS server) ───────────────────────────────
-    const userspace_step = b.step("userspace", "Build userspace");
-    const build_userspace = b.addSystemCommand(&.{
-        "sh", "-c", "mkdir -p build && cd src/userspace && zig build",
-    });
-    userspace_step.dependOn(&build_userspace.step);
-
-    // ── 3. DevSpace (Ring-1 driver layer) ─────────────────────────────────────
+    // ── 2. DevSpace (Ring-1 driver layer) ─────────────────────────────────────
+    // DevSpace kompiluje się DRUGI — po kernelu.
     const devspace_step = b.step("devspace", "Build DevSpace Ring-1 drivers");
     const build_devspace = b.addSystemCommand(&.{
         "sh", "-c", "mkdir -p build && cd src/devspace && zig build",
     });
+    // Wymuś: devspace startuje dopiero gdy kernel jest gotowy
+    build_devspace.step.dependOn(kernel_step);
     devspace_step.dependOn(&build_devspace.step);
+
+    // ── 3. Userspace (init process + FS server) ───────────────────────────────
+    // Userspace kompiluje się TRZECI — po devspace (a tym samym po kernelu).
+    const userspace_step = b.step("userspace", "Build userspace");
+    const build_userspace = b.addSystemCommand(&.{
+        "sh", "-c", "mkdir -p build && cd src/userspace && zig build",
+    });
+    // Wymuś: userspace startuje dopiero gdy devspace jest gotowy
+    build_userspace.step.dependOn(devspace_step);
+    userspace_step.dependOn(&build_userspace.step);
 
     // ── 4. GRUB config ────────────────────────────────────────────────────────
     // Lists all boot modules: kernel + userspace init + devspace driver layer.
@@ -35,18 +42,28 @@ pub fn build(b: *std.Build) void {
     //   [0] userspace.bin  — flat binary, init process (Ring-3)
     //   [1] devspace.elf   — ELF, Ring-1 driver layer
     const grub_cfg = b.addSystemCommand(&.{
-        "sh",                                                                                                                                                                                                                                                                                                               "-c",
-        "mkdir -p " ++ iso_root ++ "/boot/grub && cat > " ++ iso_root ++ "/boot/grub/grub.cfg << 'EOF'\n" ++ "set timeout=3\n" ++ "set default=0\n" ++ "menuentry CosinusOS {\n" ++ "    multiboot2 /boot/kernel.elf\n" ++ "    module2   /boot/userspace.bin\n" ++ "    module2   /boot/devspace.elf\n" ++ "}\n" ++ "EOF",
+        "sh",
+        "-c",
+        "mkdir -p " ++ iso_root ++ "/boot/grub && cat > " ++ iso_root ++ "/boot/grub/grub.cfg << 'EOF'\n" ++
+            "set timeout=3\n" ++
+            "set default=0\n" ++
+            "menuentry CosinusOS {\n" ++
+            "    multiboot2 /boot/kernel.elf\n" ++
+            "    module2   /boot/userspace.bin\n" ++
+            "    module2   /boot/devspace.elf\n" ++
+            "}\n" ++
+            "EOF",
     });
-    grub_cfg.step.dependOn(kernel_step);
+    // grub_cfg czeka na userspace — który już pośrednio wymaga devspace i kernela
     grub_cfg.step.dependOn(userspace_step);
-    grub_cfg.step.dependOn(devspace_step);
 
     // ── 5. ISO ────────────────────────────────────────────────────────────────
     const iso_step = b.step("iso", "Build ISO image");
     const grub_mkrescue = b.addSystemCommand(&.{
-        "sh",                                                                                                               "-c",
-        "rm -f " ++ build_dir ++ "/cosinusos.iso && " ++ "grub-mkrescue -o " ++ build_dir ++ "/cosinusos.iso " ++ iso_root,
+        "sh",
+        "-c",
+        "rm -f " ++ build_dir ++ "/cosinusos.iso && " ++
+            "grub-mkrescue -o " ++ build_dir ++ "/cosinusos.iso " ++ iso_root,
     });
     grub_mkrescue.step.dependOn(&grub_cfg.step);
     iso_step.dependOn(&grub_mkrescue.step);
@@ -55,9 +72,13 @@ pub fn build(b: *std.Build) void {
     const diag_step = b.step("diag", "Show build summary");
     const diag_cmd = b.addSystemCommand(&.{
         "sh", "-c",
-        "echo '=== BUILD ===' && " ++ "ls -lh " ++ build_dir ++ "/kernel.elf " ++ build_dir ++ "/userspace.bin " ++ iso_root ++ "/boot/devspace.elf " // devspace lives in iso/boot, not build/
+        "echo '=== BUILD ===' && " ++
+            "ls -lh " ++ build_dir ++ "/kernel.elf " ++
+            build_dir ++ "/userspace.bin " ++
+            iso_root ++ "/boot/devspace.elf " // devspace lives in iso/boot, not build/
         ++ "2>/dev/null || true && " // never fail diag
-        ++ "echo '--- grub.cfg ---' && " ++ "cat " ++ iso_root ++ "/boot/grub/grub.cfg 2>/dev/null || true",
+        ++ "echo '--- grub.cfg ---' && " ++
+            "cat " ++ iso_root ++ "/boot/grub/grub.cfg 2>/dev/null || true",
     });
     diag_cmd.step.dependOn(iso_step);
     diag_step.dependOn(&diag_cmd.step);
@@ -96,8 +117,11 @@ pub fn build(b: *std.Build) void {
 
     // Create disk.img if it doesn't exist yet
     const ensure_disk = b.addSystemCommand(&.{
-        "sh",                                                                                                                                                                      "-c",
-        "test -f " ++ build_dir ++ "/disk.img || " ++ "(dd if=/dev/zero of=" ++ build_dir ++ "/disk.img bs=1M count=20 2>/dev/null " ++ "&& echo '[DISK] Created 20MB disk.img')",
+        "sh",
+        "-c",
+        "test -f " ++ build_dir ++ "/disk.img || " ++
+            "(dd if=/dev/zero of=" ++ build_dir ++ "/disk.img bs=1M count=20 2>/dev/null " ++
+            "&& echo '[DISK] Created 20MB disk.img')",
     });
     ensure_disk.step.dependOn(diag_step);
 
@@ -119,8 +143,12 @@ pub fn build(b: *std.Build) void {
     // ── 9. Clean ──────────────────────────────────────────────────────────────
     const clean_step = b.step("clean", "Clean everything");
     const clean_cmd = b.addSystemCommand(&.{
-        "sh",                                                                                                                                                                                      "-c",
-        "cd src/kernel    && zig build clean ; " ++ "cd ../userspace  && zig build clean ; " ++ "cd ../devspace   && zig build clean ; " ++ "cd ../.. && rm -rf " ++ build_dir ++ " " ++ iso_root,
+        "sh",
+        "-c",
+        "cd src/kernel    && zig build clean ; " ++
+            "cd ../userspace  && zig build clean ; " ++
+            "cd ../devspace   && zig build clean ; " ++
+            "cd ../.. && rm -rf " ++ build_dir ++ " " ++ iso_root,
     });
     clean_step.dependOn(&clean_cmd.step);
 
@@ -129,8 +157,10 @@ pub fn build(b: *std.Build) void {
     // Creates a 20MB raw disk image for ATA driver testing.
     const disk_step = b.step("disk", "Create blank 20MB disk image for ATA");
     const disk_cmd = b.addSystemCommand(&.{
-        "sh",                                                                                                                                                       "-c",
-        "mkdir -p " ++ build_dir ++ " && dd if=/dev/zero of=" ++ build_dir ++ "/disk.img bs=1M count=20 2>/dev/null" ++ " && echo 'Created build/disk.img (20MB)'",
+        "sh",
+        "-c",
+        "mkdir -p " ++ build_dir ++ " && dd if=/dev/zero of=" ++ build_dir ++ "/disk.img bs=1M count=20 2>/dev/null" ++
+            " && echo 'Created build/disk.img (20MB)'",
     });
     disk_step.dependOn(&disk_cmd.step);
 }
