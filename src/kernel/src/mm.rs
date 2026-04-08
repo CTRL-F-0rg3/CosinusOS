@@ -283,3 +283,5 @@ unsafe fn pnum_serial(mut v: usize) {
 
 pub const KERNEL_STACK_SIZE: usize = 0x8000; // 32 KB
 pub const USER_STACK_SIZE:   usize = 0x4000; // 16 KB
+
+//TODO refactor
