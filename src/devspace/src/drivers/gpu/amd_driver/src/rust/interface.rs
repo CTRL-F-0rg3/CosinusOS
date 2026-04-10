@@ -9,7 +9,7 @@ impl GpuInterface {
         
         match req.req_type {
             // Logic to route messages to driver.rs
-            _ => todo!("Handle external GPU requests"),
+           // _ => todo!("Handle external GPU requests"),
         }
     }
 }
