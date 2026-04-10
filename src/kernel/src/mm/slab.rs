@@ -1,23 +1,24 @@
 // CosinusOS — mm/slab.rs
-// Slab allocator — szybki kmalloc/kfree dla kernela
+// Slab allocator — fast kmalloc / kfree for the kernel.
 //
-// Architektura:
-//   • 12 klas rozmiarów: 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384
-//   • Każda klasa: wolna lista wskaźników (embedded free list)
-//   • Duże alokacje (> 16384): bezpośrednio z PMM (rounded up do stron)
-//   • Każdy slab: jedna lub więcej stron, header na początku
-//   • Thread safety: globalny spinlock (TODO: per-CPU caches)
+// Design:
+//   • 12 size classes: 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384
+//   • Each class uses an embedded free-list (no external metadata)
+//   • Large allocations (> 16384): fall through directly to the PMM
+//   • Each slab: one or more pages split into fixed-size slots
+//   • Thread safety: single global spinlock (TODO: per-CPU caches)
 //
-// Interfejs publiczny:
-//   kmalloc(size)  → *mut u8   (zeruje pamięć)
+// Public interface:
+//   kmalloc(size)                     → *mut u8  (zeroed)
 //   kfree(ptr, size)
 //   krealloc(ptr, old_size, new_size) → *mut u8
+//   kcalloc(count, elem_size)         → *mut u8  (zeroed)
 
 use core::ptr;
 use crate::sync::Spinlock;
 use super::pmm::{PAGE_SIZE, mm_alloc, mm_free_phys, mm_alloc_nolock, MM_LOCK};
 
-// ── Konfiguracja ──────────────────────────────────────────────────────────────
+// ── Configuration ─────────────────────────────────────────────────────────────
 
 const SLAB_SIZES: [usize; 12] = [
     8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384,
@@ -25,29 +26,27 @@ const SLAB_SIZES: [usize; 12] = [
 const N_CLASSES: usize = SLAB_SIZES.len();
 const MAX_LARGE: usize = SLAB_SIZES[N_CLASSES - 1];
 
-// Ile stron alokujemy na raz dla danej klasy
-// (większe klasy → więcej stron naraz dla amortyzacji)
+// Pages allocated at once per class (larger classes amortise the overhead)
 const SLAB_PAGES: [usize; 12] = [
     1, 1, 1, 1, 1, 1, 2, 2, 4, 4, 8, 8,
 ];
 
-// ── Globalny lock ─────────────────────────────────────────────────────────────
+// ── Global lock ───────────────────────────────────────────────────────────────
 
 static SLAB_LOCK: Spinlock = Spinlock::new();
 
-// ── SlabClass — jedna klasa rozmiarów ─────────────────────────────────────────
+// ── SlabClass ─────────────────────────────────────────────────────────────────
 
 struct SlabClass {
-    obj_size:  usize,
-    slab_pages: usize,
-    free_head: *mut FreeNode,
-    // Statystyki
+    obj_size:    usize,
+    slab_pages:  usize,
+    free_head:   *mut FreeNode,
     alloc_count: u64,
     free_count:  u64,
     slab_count:  u64,
 }
 
-// Każdy wolny slot zawiera wskaźnik do następnego wolnego slotu
+/// Every free slot stores a pointer to the next free slot.
 struct FreeNode {
     next: *mut FreeNode,
 }
@@ -60,14 +59,14 @@ impl SlabClass {
         Self {
             obj_size,
             slab_pages,
-            free_head: ptr::null_mut(),
+            free_head:   ptr::null_mut(),
             alloc_count: 0,
             free_count:  0,
             slab_count:  0,
         }
     }
 
-    /// Pobierz slot z wolnej listy.
+    /// Pop one slot from the free list.
     #[inline]
     unsafe fn pop(&mut self) -> *mut u8 {
         if self.free_head.is_null() { return ptr::null_mut(); }
@@ -77,7 +76,7 @@ impl SlabClass {
         node as *mut u8
     }
 
-    /// Wróć slot do wolnej listy.
+    /// Push one slot back onto the free list.
     #[inline]
     unsafe fn push(&mut self, ptr: *mut u8) {
         let node = ptr as *mut FreeNode;
@@ -86,50 +85,47 @@ impl SlabClass {
         self.free_count += 1;
     }
 
-    /// Alokuj nowy slab (1+ stron), podziel na sloty.
+    /// Allocate a new slab (one or more pages) and slice it into slots.
     unsafe fn grow(&mut self) -> bool {
-        // Alokuj strony
         let pages = self.slab_pages;
         let total = pages * PAGE_SIZE;
 
-        // Alokuj pierwszą stronę jako bazę
         let base = mm_alloc_nolock();
         if base == 0 { return false; }
         core::ptr::write_bytes(base as *mut u8, 0, PAGE_SIZE);
 
-        // Alokuj kolejne strony jeśli potrzeba
+        // Allocate additional pages if the class requires more than one
         for i in 1..pages {
             let p = mm_alloc_nolock();
             if p == 0 {
-                // OOM w trakcie — zwolnij to co mamy
+                // OOM mid-way — release what we already have
                 mm_free_phys(base);
                 return false;
             }
             core::ptr::write_bytes(p as *mut u8, 0, PAGE_SIZE);
-            // Zakładamy że PMM zwraca kolejne ramki lub używamy pierwszej tylko
-            // (dla uproszczenia — w prawdziwym systemie musielibyśmy śledzić)
-            let _ = p; // używamy tylko bazę
+            // NOTE: we only track the base address; a real system would
+            //       maintain a slab header list. TODO: buddy allocator.
+            let _ = p;
         }
 
-        // Podziel slab na sloty i dodaj do wolnej listy
+        // Slice the slab into slots and push in reverse order
+        // (last pushed = first used = cache-friendly LIFO)
         let slots = total / self.obj_size;
-        // Dodaj w odwróconej kolejności (ostatni dodany = pierwszy używany = cache-friendly)
         let mut i = slots;
         while i > 0 {
             i -= 1;
-            let ptr = (base + i as u64 * self.obj_size as u64) as *mut u8;
-            // Nie przekraczamy slaba
             if i * self.obj_size + self.obj_size > total { continue; }
+            let ptr = (base + i as u64 * self.obj_size as u64) as *mut u8;
             self.push(ptr);
         }
-        // Poprawka: pop/push zlicza — skoryguj
+        // push() increments free_count for each slot; undo that batch count
         self.free_count -= slots as u64;
 
         self.slab_count += 1;
         true
     }
 
-    /// Alokuj slot (grow jeśli potrzeba).
+    /// Allocate one slot, growing the slab if the free list is empty.
     unsafe fn alloc(&mut self) -> *mut u8 {
         if self.free_head.is_null() {
             if !self.grow() { return ptr::null_mut(); }
@@ -138,7 +134,7 @@ impl SlabClass {
     }
 }
 
-// ── Globalne klasy ────────────────────────────────────────────────────────────
+// ── Global class table ────────────────────────────────────────────────────────
 
 static mut CLASSES: [SlabClass; N_CLASSES] = [
     SlabClass::new(SLAB_SIZES[ 0], SLAB_PAGES[ 0]),
@@ -165,10 +161,9 @@ fn round_up_pages(size: usize) -> usize {
     (size + PAGE_SIZE - 1) / PAGE_SIZE
 }
 
-// ── Publiczny interfejs ───────────────────────────────────────────────────────
+// ── Public interface ──────────────────────────────────────────────────────────
 
-/// Alokuj `size` bajtów. Pamięć jest wyzerowana.
-/// Zwraca null przy OOM.
+/// Allocate `size` zeroed bytes. Returns null on OOM.
 pub unsafe fn kmalloc(size: usize) -> *mut u8 {
     if size == 0 { return ptr::null_mut(); }
 
@@ -180,20 +175,19 @@ pub unsafe fn kmalloc(size: usize) -> *mut u8 {
         SLAB_LOCK.unlock();
 
         if !ptr.is_null() {
-            // Zeruj (slab może zawierać stare dane z poprzedniej alokacji)
+            // Zero the slot — it may contain stale data from a previous alloc
             ptr::write_bytes(ptr, 0, SLAB_SIZES[ci]);
         }
         return ptr;
     }
 
-    // Duże alokacje — bezpośrednio z PMM
+    // Large allocation — go directly to the PMM
     let pages = round_up_pages(size);
     MM_LOCK.lock();
     let p = mm_alloc_nolock();
-    // Dla uproszczenia alokujemy tylko 1 stronę — dla size > PAGE_SIZE
-    // potrzeba by multi-page allocator. TODO: buddy allocator.
     for _ in 1..pages {
-        let _ = mm_alloc_nolock(); // alokuj kolejne strony (tracktujemy tylko bazę)
+        // Allocate remaining pages (only the base address is tracked for now)
+        let _ = mm_alloc_nolock();
     }
     MM_LOCK.unlock();
 
@@ -202,8 +196,8 @@ pub unsafe fn kmalloc(size: usize) -> *mut u8 {
     p as *mut u8
 }
 
-/// Zwolnij pamięć alokowaną przez kmalloc.
-/// `size` musi odpowiadać temu co podano przy kmalloc.
+/// Free memory allocated by kmalloc.
+/// `size` must match the value passed to the original kmalloc call.
 pub unsafe fn kfree(ptr: *mut u8, size: usize) {
     if ptr.is_null() || size == 0 { return; }
 
@@ -214,21 +208,21 @@ pub unsafe fn kfree(ptr: *mut u8, size: usize) {
         return;
     }
 
-    // Duże alokacje — zwróć do PMM
+    // Large allocation — return pages to the PMM
     let pages = round_up_pages(size);
     for i in 0..pages {
         mm_free_phys(ptr as u64 + i as u64 * PAGE_SIZE as u64);
     }
 }
 
-/// Realokuj blok. Stare dane są kopiowane do nowego bloku.
+/// Reallocate a block. Old data is copied into the new block.
 pub unsafe fn krealloc(ptr: *mut u8, old_size: usize, new_size: usize) -> *mut u8 {
-    if ptr.is_null() { return kmalloc(new_size); }
-    if new_size == 0 { kfree(ptr, old_size); return ptr::null_mut(); }
+    if ptr.is_null()  { return kmalloc(new_size); }
+    if new_size == 0  { kfree(ptr, old_size); return ptr::null_mut(); }
 
-    // Sprawdź czy nowy rozmiar mieści się w tej samej klasie
+    // If the new size fits in the same size class, reuse in place
     if let (Some(old_ci), Some(new_ci)) = (class_for(old_size), class_for(new_size)) {
-        if old_ci == new_ci { return ptr; } // ta sama klasa — nie rób nic
+        if old_ci == new_ci { return ptr; }
     }
 
     let new_ptr = kmalloc(new_size);
@@ -239,12 +233,12 @@ pub unsafe fn krealloc(ptr: *mut u8, old_size: usize, new_size: usize) -> *mut u
     new_ptr
 }
 
-/// Alokuj tablicę `count` elementów rozmiaru `elem_size`. Wyzerowane.
+/// Allocate a zeroed array of `count` elements of `elem_size` bytes.
 pub unsafe fn kcalloc(count: usize, elem_size: usize) -> *mut u8 {
     kmalloc(count.saturating_mul(elem_size))
 }
 
-// ── Statystyki ────────────────────────────────────────────────────────────────
+// ── Statistics ────────────────────────────────────────────────────────────────
 
 pub struct SlabStats {
     pub class_size:   usize,
@@ -274,16 +268,11 @@ pub unsafe fn slab_dump() {
         let c = &CLASSES[ci];
         if c.alloc_count == 0 { continue; }
         serial_print("[SLAB] ");
-        pnum_serial(c.obj_size);
-        serial_print("\t");
-        pnum_serial(c.alloc_count as usize);
-        serial_print("\t");
-        pnum_serial(c.free_count as usize);
-        serial_print("\t");
+        pnum_serial(c.obj_size);         serial_print("\t");
+        pnum_serial(c.alloc_count as usize); serial_print("\t");
+        pnum_serial(c.free_count  as usize); serial_print("\t");
         let live = c.alloc_count.saturating_sub(c.free_count);
-        pnum_serial(live as usize);
-        serial_print("\t");
-        pnum_serial(c.slab_count as usize);
-        serial_print("\n");
+        pnum_serial(live as usize);      serial_print("\t");
+        pnum_serial(c.slab_count  as usize); serial_print("\n");
     }
 }
