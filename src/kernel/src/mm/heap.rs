@@ -1,23 +1,17 @@
 // CosinusOS — mm/heap.rs
 // Kernel heap — GlobalAlloc backed by slab allocator
 //
-// Implementuje GlobalAlloc dla kernela (używane przez alloc::vec, Box, etc.)
-// Deleguje do slab::kmalloc / slab::kfree.
-//
-// Uwaga: rozmiar przy dealloc() musi odpowiadać temu z alloc() —
-// Rust globalny alokator zawsze przekazuje oryginalny Layout do dealloc.
+// UWAGA: #[global_allocator] NIE jest tutaj — projekt ma już
+// własny allocator w src/allocator/kernel_heap.rs.
+// Ten plik dostarcza KernelHeap jako alternatywę do ewentualnej zamiany.
 
 use core::alloc::{GlobalAlloc, Layout};
 use super::slab::{kmalloc, kfree, krealloc};
-
-// ── GlobalAlloc impl ──────────────────────────────────────────────────────────
 
 pub struct KernelHeap;
 
 unsafe impl GlobalAlloc for KernelHeap {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        // Używamy max(size, align) żeby mieć pewność że alignment jest spełniony
-        // dla klas slabów (wszystkie są naturalnie wyrównane do swojego rozmiaru)
         let effective = layout.size().max(layout.align());
         kmalloc(effective)
     }
@@ -35,12 +29,10 @@ unsafe impl GlobalAlloc for KernelHeap {
     }
 }
 
-#[global_allocator]
-pub static KERNEL_HEAP: KernelHeap = KernelHeap;
+// Żeby przełączyć na slab heap, dodaj w kernel_heap.rs:
+//   #[global_allocator]
+//   static HEAP: mm::heap::KernelHeap = mm::heap::KernelHeap;
 
-// ── Heap stats ────────────────────────────────────────────────────────────────
-
-/// Wypisz stan kernel heap (deleguje do slab_dump).
 pub unsafe fn heap_dump() {
     super::slab::slab_dump();
 }

@@ -57,6 +57,9 @@ pub use pmm::{
     mm_free_kb, mm_used_kb, mm_total_kb, mm_free_pages, mm_dump_stats,
 };
 
+// Kompatybilność wsteczna — stary mm.rs miał te stałe bezpośrednio
+pub const KERNEL_STACK_SIZE: usize = 0x8000; // 32 KB (dla threading.rs)
+
 pub use vmm::{
     // PTE flags
     PTE_P, PTE_W, PTE_U, PTE_PWT, PTE_PCD, PTE_A, PTE_D,

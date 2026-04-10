@@ -264,7 +264,4 @@ pub fn swap_pte_slot(pte: u64) -> u64 {
     (pte & PTE_SWAP_SLOT_MASK) >> PTE_SWAP_SLOT_SHIFT
 }
 
-// ── Re-eksport dla syscall handlera ──────────────────────────────────────────
-
-pub use super::vmm::{valid_buf, valid_user, new_user_p4, clone_user_p4, free_user_p4};
-pub use super::pmm::{mm_alloc, mm_free_phys, mm_alloc_huge, mm_free_huge, mm_free_kb, mm_used_kb};
+// (re-eksporty są w mm/mod.rs — tutaj nie duplikujemy)
