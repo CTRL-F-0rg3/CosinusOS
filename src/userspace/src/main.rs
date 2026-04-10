@@ -378,6 +378,7 @@ fn run_mount_check() {
 // ─── Entry point ──────────────────────────────────────────────────────────────
 
 #[no_mangle]
+#[link_section = ".text._start"] 
 pub extern "C" fn _start(arg: u64) -> ! {
     let my_tid = thread_id();
     cos_dbg!("[init] started TID={} fs_pid={}\n", my_tid, arg);
