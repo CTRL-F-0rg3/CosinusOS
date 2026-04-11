@@ -20,13 +20,16 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 use crate::sync::Spinlock;
 use crate::mm::{
     VirtAddr, PhysAddr, PTE_W, PTE_U, K_P4, PAGE_SIZE,
-    KERNEL_STACK_SIZE, USER_STACK_SIZE,
+    KERNEL_STACK_SIZE,
     vmap, mm_alloc,
 };
 use crate::debug::{serial_print, serial_hex, print, num_str};
 use crate::perm::tss_rsp0;
 
 pub const MAX_THREADS: usize = 64;
+
+// User stack size as usize (separate from vma::USER_STACK_SIZE which is VirtAddr/u64)
+const USER_STACK_SIZE: usize = 0x0080_0000; // 8 MB
 
 // ── Syscall entry trampoline ──────────────────────────────────────────────────
 
@@ -161,11 +164,11 @@ pub unsafe fn spawn_k(name: &str, entry: u64, arg: u64) -> i32 {
         // Kernel stack layout: one guard page, then KERNEL_STACK_SIZE bytes
         let ks = 0x0200_0000u64
             + i as u64 * (KERNEL_STACK_SIZE + PAGE_SIZE) as u64
-            + PAGE_SIZE as u64; // skip guard page
+            + PAGE_SIZE as u64;
         for p in 0..(KERNEL_STACK_SIZE / PAGE_SIZE) {
             vmap(K_P4, ks + p as u64 * PAGE_SIZE as u64, mm_alloc(), PTE_W);
         }
-        let kt = ks + KERNEL_STACK_SIZE as u64; // stack top
+        let kt = ks + KERNEL_STACK_SIZE as u64;
 
         t.id = i as u32; t.prio = 10;
         t.ktop = kt; t.utop = kt; t.cr3 = K_P4; t.ticks = 0;
@@ -201,6 +204,7 @@ pub unsafe fn spawn_user_on_cr3(name: &str, entry: u64, arg: u64, cr3: PhysAddr)
         let kt = ks + KERNEL_STACK_SIZE as u64;
 
         // User stack (ring-3, mapped into the process address space)
+        // USER_STACK_SIZE is usize here — no mixing with VirtAddr/u64
         let us = 0x0400_0000u64
             + i as u64 * (USER_STACK_SIZE + PAGE_SIZE) as u64
             + PAGE_SIZE as u64;
@@ -235,8 +239,8 @@ pub unsafe fn spawn_user_on_cr3(name: &str, entry: u64, arg: u64, cr3: PhysAddr)
 ///               rbx / rbp / r12 / r13 / r14 / r15
 fn init_thread_stack(
     t:     &mut Thread,
-    kt:    VirtAddr,  // kernel stack top
-    ut:    VirtAddr,  // user stack top (== kt for kernel threads)
+    kt:    VirtAddr,
+    ut:    VirtAddr,
     entry: u64,
     arg:   u64,
     user:  bool,
@@ -244,18 +248,15 @@ fn init_thread_stack(
     let mut ksp = kt;
     unsafe {
         if user {
-            // iretq frame — tramp_u will execute iretq to enter ring-3
-            ksp -= 8; *(ksp as *mut u64) = 0x23;  // SS  (ring-3 data selector)
-            ksp -= 8; *(ksp as *mut u64) = ut;     // RSP (user stack top)
-            ksp -= 8; *(ksp as *mut u64) = 0x202;  // RFLAGS (IF=1, reserved bit 1)
-            ksp -= 8; *(ksp as *mut u64) = 0x1B;   // CS  (ring-3 code selector)
+            ksp -= 8; *(ksp as *mut u64) = 0x23;  // SS
+            ksp -= 8; *(ksp as *mut u64) = ut;     // RSP
+            ksp -= 8; *(ksp as *mut u64) = 0x202;  // RFLAGS (IF=1)
+            ksp -= 8; *(ksp as *mut u64) = 0x1B;   // CS
             ksp -= 8; *(ksp as *mut u64) = entry;  // RIP
-
             ksp -= 8; *(ksp as *mut u64) = tramp_u as *const () as u64;
         } else {
             ksp -= 8; *(ksp as *mut u64) = tramp_k as *const () as u64;
         }
-        // Callee-saved registers (thread_switch pops these on first switch-in)
         ksp -= 8; *(ksp as *mut u64) = 0u64;   // rbx
         ksp -= 8; *(ksp as *mut u64) = 0u64;   // rbp
         ksp -= 8; *(ksp as *mut u64) = 0u64;   // r12
@@ -268,15 +269,12 @@ fn init_thread_stack(
 
 // ── Scheduler ─────────────────────────────────────────────────────────────────
 
-/// Round-robin scheduler with priority selection.
-/// Wakes sleeping threads whose wake_tick has elapsed, then picks the next
-/// Ready thread. If the chosen thread is a user-space thread, enters it
-/// directly via enter_userspace(); otherwise performs a kernel context switch.
+/// Round-robin scheduler. Wakes sleeping threads, picks the next Ready thread.
+/// If the chosen thread is user-space, enters it via enter_userspace();
+/// otherwise performs a kernel context switch.
 pub unsafe fn schedule() {
-    // Non-reentrant — bail if already inside schedule()
     if SCHED_LOCK.locked.swap(true, Ordering::Acquire) { return; }
 
-    // Wake any sleeping threads whose deadline has passed
     let cur_tick = crate::perm::TICK;
     for i in 0..MAX_THREADS {
         let t = &mut THREADS[i];
@@ -288,14 +286,11 @@ pub unsafe fn schedule() {
 
     let cur  = CUR.load(Ordering::Relaxed);
     let mut next = cur;
-
-    // Find the next Ready thread (simple round-robin)
     for _ in 0..MAX_THREADS {
         next = (next + 1) % MAX_THREADS;
         if THREADS[next].state == TS::Ready { break; }
     }
 
-    // Nothing to switch to
     if next == cur && THREADS[cur].state == TS::Run {
         SCHED_LOCK.locked.store(false, Ordering::Release);
         return;
@@ -306,21 +301,18 @@ pub unsafe fn schedule() {
     THREADS[next].ticks += 1;
     CUR.store(next, Ordering::SeqCst);
 
-    // Update TSS RSP0 — where the CPU will save the stack pointer on ring-3 → ring-0
     if THREADS[next].cr3 == K_P4 || THREADS[next].cr3 == 0 {
         tss_rsp0(THREADS[next].ktop);
     } else {
         tss_rsp0(crate::perm::irq_stack_top());
     }
 
-    // Switch address space if needed
     let ncr3 = THREADS[next].cr3;
     let ccr3: u64;
     asm!("mov {}, cr3", out(reg) ccr3, options(nomem, nostack));
     if ncr3 != 0 && ncr3 != ccr3 {
         asm!("mov cr3, {}", in(reg) ncr3, options(nostack));
     }
-
     SCHED_LOCK.locked.store(false, Ordering::Release);
 
     serial_print("[SCHED] cur=");  serial_hex(cur as u64);
@@ -328,7 +320,6 @@ pub unsafe fn schedule() {
     serial_print(" new_krsp=");    serial_hex(THREADS[next].krsp);
     serial_print("\n");
 
-    // If the next thread is a user-space thread, enter it via iretq
     if THREADS[next].cr3 != 0 && THREADS[next].cr3 != K_P4 {
         let entry = crate::userspace_loader::US_ENTRY;
         let stack = crate::userspace_loader::US_STACK;
@@ -339,23 +330,14 @@ pub unsafe fn schedule() {
         enter_userspace(entry, stack, 0, cr3);
     }
 
-    // Kernel thread context switch
     thread_switch(&mut THREADS[cur].krsp as *mut u64, THREADS[next].krsp);
 }
 
-// ── Foreign functions ─────────────────────────────────────────────────────────
-
 unsafe extern "C" {
-    /// Switch to user space via iretq.
-    /// Defined in enter_userspace.asm.
     pub fn enter_userspace(entry: u64, stack: u64, arg: u64, cr3: u64) -> !;
 }
 
-// ── Boot jump to first thread ─────────────────────────────────────────────────
-
-/// Called once at the end of kernel initialisation.
-/// Picks the highest-priority Ready thread and jumps into it without saving
-/// any kernel context (there is no thread to return to).
+/// Called once at boot — jumps into the first ready thread without saving context.
 pub unsafe fn jump_to_scheduler() -> ! {
     let mut best      = usize::MAX;
     let mut best_prio = u8::MAX;
@@ -392,22 +374,17 @@ pub unsafe fn jump_to_scheduler() -> ! {
 
 pub unsafe fn thread_yield() { schedule(); }
 
-// ── Low-level context switch ──────────────────────────────────────────────────
-
-/// Save callee-saved registers onto the current stack, store RSP into `*old`,
-/// load RSP from `new`, and restore callee-saved registers from the new stack.
+/// Save callee-saved registers, swap RSP, restore callee-saved registers.
 #[unsafe(naked)]
 unsafe extern "C" fn thread_switch(old: *mut VirtAddr, new: VirtAddr) {
     core::arch::naked_asm!(
         "push rbx", "push rbp", "push r12", "push r13", "push r14", "push r15",
-        "mov [rdi], rsp",   // save current RSP into *old
-        "mov rsp, rsi",     // load new RSP
+        "mov [rdi], rsp",
+        "mov rsp, rsi",
         "pop r15", "pop r14", "pop r13", "pop r12", "pop rbp", "pop rbx",
         "ret",
     );
 }
-
-// ── Idle thread ───────────────────────────────────────────────────────────────
 
 unsafe extern "C" fn idle(_: u64) -> ! {
     loop { asm!("hlt", options(nomem, nostack)); }
