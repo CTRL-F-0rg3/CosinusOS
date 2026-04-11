@@ -1,5 +1,5 @@
 // CosinusOS — perm.rs
-
+// GDT, IDT, TSS, PIC, PIT, ISR handlers.
 
 use core::arch::{asm, naked_asm};
 use crate::debug::{col, outb, io_wait, print_raw, printc, hex_str, print};
@@ -40,12 +40,29 @@ impl Tss {
 
 pub static mut TSS:      Tss                           = Tss::new();
 pub static mut DF_STACK: [u8; DOUBLE_FAULT_STACK_SIZE] = [0u8; DOUBLE_FAULT_STACK_SIZE];
-const IRQ_STACK_SIZE: usize = 0x4000;
-pub static mut IRQ_STACK: [u8; IRQ_STACK_SIZE] = [0u8; IRQ_STACK_SIZE];
-pub fn irq_stack_top() -> u64 { unsafe { IRQ_STACK.as_ptr() as u64 + IRQ_STACK_SIZE as u64 } }
+
+const IRQ_STACK_SIZE: usize = 0x4000; // 16 KB
+
+// IRQ_STACK must be page-aligned so that irq_stack_top() is properly aligned.
+// A plain [u8; N] static has no guaranteed alignment — wrapping it in a
+// repr(C, align(4096)) struct forces the linker to place it on a page boundary.
+#[repr(C, align(4096))]
+struct IrqStackStorage([u8; IRQ_STACK_SIZE]);
+
+pub static mut IRQ_STACK: IrqStackStorage = IrqStackStorage([0u8; IRQ_STACK_SIZE]);
+
+/// Return the top-of-stack address for the IRQ/syscall kernel stack.
+/// The value is aligned down to 16 bytes as required by the x86-64 ABI so
+/// that the CPU's automatic RFLAGS/CS/RIP/RSP/SS pushes on entry stay aligned.
+pub fn irq_stack_top() -> u64 {
+    let base = unsafe { IRQ_STACK.0.as_ptr() as u64 };
+    // base is page-aligned (4096), so base + IRQ_STACK_SIZE is also aligned.
+    // The & !0xF is a safety net in case the calculation ever changes.
+    (base + IRQ_STACK_SIZE as u64) & !0xF
+}
 
 pub unsafe fn tss_rsp0(v: VirtAddr) { TSS.rsp0 = v; }
-pub unsafe fn tss_use_irq_stack() { TSS.rsp0 = irq_stack_top(); }
+pub unsafe fn tss_use_irq_stack()   { TSS.rsp0 = irq_stack_top(); }
 
 // ── GDT ──────────────────────────────────────────────────────────────────────
 #[repr(C, packed)] #[derive(Clone, Copy)]
@@ -146,9 +163,7 @@ pub unsafe fn init_pic() {
     outb(0x21, 0x20); io_wait(); outb(0xA1, 0x28); io_wait();
     outb(0x21, 0x04); io_wait(); outb(0xA1, 0x02); io_wait();
     outb(0x21, 0x01); io_wait(); outb(0xA1, 0x01); io_wait();
-
     outb(0x21, 0xFC);
- 
     outb(0xA1, 0xFF);
 }
 
@@ -274,13 +289,13 @@ pub unsafe extern "C" fn handle_pf(f: *mut TF) {
     { let mut b=[0u8;18]; crate::debug::serial_print(crate::debug::hex_str(addr,&mut b)); }
     crate::debug::serial_print("\n");
     let pml4e = (*pt_ptr(cr3)).e[pml4i];
-    crate::debug::serial_print("  PML4["); 
+    crate::debug::serial_print("  PML4[");
     { let mut b=[0u8;24]; crate::debug::serial_print(crate::debug::num_str(pml4i,&mut b)); }
     crate::debug::serial_print("]=");
     { let mut b=[0u8;18]; crate::debug::serial_print(crate::debug::hex_str(pml4e,&mut b)); }
     crate::debug::serial_print("\n");
     if pml4e & 1 != 0 {
-        let pdpt = pml4e & 0x000F_FFFF_FFFF_F000;
+        let pdpt  = pml4e & 0x000F_FFFF_FFFF_F000;
         let pdpte = (*pt_ptr(pdpt)).e[pdpti];
         crate::debug::serial_print("  PDPT[");
         { let mut b=[0u8;24]; crate::debug::serial_print(crate::debug::num_str(pdpti,&mut b)); }
@@ -288,7 +303,7 @@ pub unsafe extern "C" fn handle_pf(f: *mut TF) {
         { let mut b=[0u8;18]; crate::debug::serial_print(crate::debug::hex_str(pdpte,&mut b)); }
         crate::debug::serial_print("\n");
         if pdpte & 1 != 0 {
-            let pd = pdpte & 0x000F_FFFF_FFFF_F000;
+            let pd  = pdpte & 0x000F_FFFF_FFFF_F000;
             let pde = (*pt_ptr(pd)).e[pdi];
             crate::debug::serial_print("  PD[");
             { let mut b=[0u8;24]; crate::debug::serial_print(crate::debug::num_str(pdi,&mut b)); }
@@ -296,7 +311,7 @@ pub unsafe extern "C" fn handle_pf(f: *mut TF) {
             { let mut b=[0u8;18]; crate::debug::serial_print(crate::debug::hex_str(pde,&mut b)); }
             crate::debug::serial_print("\n");
             if pde & 1 != 0 {
-                let pt = pde & 0x000F_FFFF_FFFF_F000;
+                let pt  = pde & 0x000F_FFFF_FFFF_F000;
                 let pte = (*pt_ptr(pt)).e[pti];
                 crate::debug::serial_print("  PT[");
                 { let mut b=[0u8;24]; crate::debug::serial_print(crate::debug::num_str(pti,&mut b)); }
@@ -338,7 +353,7 @@ pub unsafe extern "C" fn handle_syscall(f: *mut TF) {
     crate::syscall_api::syscall_dispatch_v2(f);
 }
 
-// ── PublicAPI ─────────────────────────────────────────────────────────────
+// ── Public API ────────────────────────────────────────────────────────────────
 pub unsafe fn kb_pop() -> Option<char> {
     crate::input::input_poll()
 }
