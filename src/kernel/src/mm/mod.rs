@@ -1,22 +1,22 @@
 // CosinusOS — mm/mod.rs
-// Memory Manager — root module, re-exports and initialisation.
+// Memory Manager — root module
 //
-// Layout:
+// Struktura:
 //   mm/
-//   ├── mod.rs    — this file: re-exports, init entry point
-//   ├── pmm.rs    — Physical Memory Manager (bitmap allocator)
-//   ├── vmm.rs    — Virtual Memory Manager (4-level page tables, CoW)
-//   ├── frame.rs  — Per-frame reference counting (CoW, shared mappings)
-//   ├── vma.rs    — Virtual Memory Areas (demand paging, ASLR, heap/sbrk)
-//   ├── slab.rs   — Slab allocator (kmalloc / kfree)
-//   ├── heap.rs   — GlobalAlloc kernel heap (delegates to slab)
-//   └── user.rs   — Userspace helpers (ELF loader, syscall backend, #PF dispatch)
+//   ├── mod.rs      — ten plik, re-eksporty, inicjalizacja
+//   ├── pmm.rs      — Physical Memory Manager (bitmap)
+//   ├── vmm.rs      — Virtual Memory Manager (page tables, CoW)
+//   ├── frame.rs    — Refcounting ramek (dla CoW i shared mappings)
+//   ├── vma.rs      — Virtual Memory Areas (demand paging, ASLR, heap)
+//   ├── slab.rs     — Slab allocator (kmalloc/kfree)
+//   ├── heap.rs     — GlobalAlloc kernel heap (delegates to slab)
+//   └── user.rs     — Userspace helpers (ELF load, syscall backend, #PF dispatch)
 //
 // Initialisation order (call from kernel main):
-//   1. mm::init(phys_base, phys_size, boot_cr3)  — PMM + VMM
-//   2. mm::dump_all()                             — optional diagnostics
+//   1. mm::init(phys_base, phys_size)  — PMM + VMM
+//   2. (opcjonalnie) mm::heap_dump()   — diagnostyka
 //
-// Public API (re-exported at the mm:: level):
+// Publiczne API (re-eksportowane na poziomie mm::):
 //   PMM:   mm_alloc, mm_free_phys, mm_alloc_huge, mm_free_huge
 //          mm_free_kb, mm_used_kb, mm_total_kb
 //   VMM:   vmap, vunmap, vmap_huge, vunmap_huge
@@ -31,14 +31,13 @@
 //          make_swap_pte, swap_pte_slot
 //
 // Backwards-compatible with the original single-file mm.rs:
-//   PhysAddr, VirtAddr, PAGE_SIZE
-//   PTE_W, PTE_U, PTE_P, PTE_ADDR
-//   MM_LOCK, K_P4
-//   mm_alloc(), mm_alloc_nolock(), mm_free_phys(), mm_free_nolock()
-//   vmap(), vunmap(), virt_to_phys(), valid_user(), valid_buf()
-//   new_user_p4(), vmm_init(), mm_init()
-//   mm_free_kb(), mm_used_kb(), mm_total_kb()
-//   KERNEL_STACK_SIZE, USER_STACK_SIZE
+//   • PhysAddr, VirtAddr, PAGE_SIZE
+//   • PTE_W, PTE_U, PTE_P, PTE_ADDR
+//   • MM_LOCK, K_P4
+//   • mm_alloc(), mm_alloc_nolock(), mm_free_phys(), mm_free_nolock()
+//   • vmap(), vunmap(), virt_to_phys(), valid_user(), valid_buf()
+//   • new_user_p4(), vmm_init(), mm_init()
+//   • mm_free_kb(), mm_used_kb(), mm_total_kb()
 
 pub mod frame;
 pub mod pmm;
@@ -48,7 +47,7 @@ pub mod slab;
 pub mod heap;
 pub mod user;
 
-// ── Type re-exports ───────────────────────────────────────────────────────────
+// ── Re-exports ───────────────────────────────────────────────────────────────────
 
 pub use pmm::{
     PhysAddr, VirtAddr, PAGE_SIZE, HUGE_SIZE, MAX_FRAMES,
@@ -58,8 +57,8 @@ pub use pmm::{
     mm_free_kb, mm_used_kb, mm_total_kb, mm_free_pages, mm_dump_stats,
 };
 
-// Backwards-compat constants that the original mm.rs exported directly
-pub const KERNEL_STACK_SIZE: usize = 0x8000; // 32 KB — used by threading.rs
+// Backwards-compat constants that the original mm.rs exported at crate level
+pub const KERNEL_STACK_SIZE: usize = 0x8000; // 32 KB (dla threading.rs)
 
 pub use vmm::{
     // PTE flags
@@ -67,23 +66,23 @@ pub use vmm::{
     PTE_PS, PTE_G, PTE_COW, PTE_NX, PTE_ADDR,
     // VMM state
     K_P4,
-    // Types
+    // Typy
     PT, pt_ptr,
-    // PTE helpers
+    // Helpers
     pte_make, pte_present, pte_user, pte_writable, pte_huge, pte_cow, pte_addr,
     // TLB
     tlb_flush_page, tlb_flush_all,
-    // Scratch allocation
+    // Scratch alloc
     zpg_locked,
-    // Initialisation
+    // Init
     vmm_init,
     // Mapping
     vmap, vunmap, vmap_huge, vunmap_huge,
-    // Translation
+    // Translacja
     virt_to_phys, valid_user, valid_buf,
     // P4 management
     new_user_p4, clone_user_p4, free_user_p4,
-    // CoW fault handler
+    // CoW
     handle_cow_fault,
 };
 
@@ -113,7 +112,7 @@ pub use user::{
     PTE_SWAP, PTE_SWAP_SLOT_SHIFT, PTE_SWAP_SLOT_MASK,
 };
 
-// ── Initialisation ────────────────────────────────────────────────────────────
+// ── Inicjalizacja ─────────────────────────────────────────────────────────────
 
 /// Initialise the entire memory subsystem.
 /// Call once from kernel main after detecting available RAM.
@@ -126,9 +125,8 @@ pub unsafe fn init(phys_base: PhysAddr, phys_size: usize, boot_cr3: PhysAddr) {
     vmm_init(boot_cr3);
 }
 
-// ── Diagnostics ───────────────────────────────────────────────────────────────
+// ── Diagnostyka ───────────────────────────────────────────────────────────────
 
-/// Print PMM and slab statistics to the serial port.
 pub unsafe fn dump_all() {
     mm_dump_stats();
     slab_dump();

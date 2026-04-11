@@ -1,54 +1,52 @@
 // CosinusOS — mm/pmm.rs
 // Physical Memory Manager
 //
-// Implementation:
-//   • Single-level bitmap (one bit per 4 KB frame)
+// Implementacja:
+//   • Bitmap pierwszego poziomu (jeden bit = jedna ramka 4 KB)
 //   • Hint-based fast alloc: HINT points at the last-used bitmap word
-//   • Huge page alloc: mm_alloc_huge() — 512 contiguous aligned frames (2 MB)
-//   • Lock-free stats via atomics for fast reads without acquiring MM_LOCK
+//   • Huge page alloc: mm_alloc_huge() — 512 kolejnych ramek (2 MB aligned)
+//   • Stats: free / used / total in KB
 //   • NUMA stub: single region (extendable to multiple banks)
 //
-// Public types:
-//   PhysAddr = u64   — physical address
+// Publiczne typy:
+//   PhysAddr = u64   — adres fizyczny
 //   VirtAddr = u64   — virtual address (used by VMM)
 
 use core::sync::atomic::{AtomicUsize, Ordering};
 use crate::sync::Spinlock;
 use crate::debug::{serial_print, putc_raw};
 
-// ── Types ─────────────────────────────────────────────────────────────────────
+// ── Typy ─────────────────────────────────────────────────────────────────────
 
 pub type PhysAddr = u64;
 pub type VirtAddr = u64;
 
-// ── Constants ─────────────────────────────────────────────────────────────────
+// ── Constants ────────────────────────────────────────────────────────────────
 
-pub const PAGE_SIZE:  usize = 0x1000;    // 4 KB
-pub const HUGE_SIZE:  usize = 0x20_0000; // 2 MB = 512 pages
-pub const MAX_FRAMES: usize = 0x10000;   // 64K frames = 256 MB addressable
+pub const PAGE_SIZE:  usize = 0x1000;        // 4 KB
+pub const HUGE_SIZE:  usize = 0x20_0000;     // 2 MB = 512 stron
+pub const MAX_FRAMES: usize = 0x10000;       // 64K frames = 256 MB addressable
 
-// ── PMM state ────────────────────────────────────────────────────────────────
+// ── Stan PMM ──────────────────────────────────────────────────────────────────
 
 pub static MM_LOCK: Spinlock = Spinlock::new();
 
-// Exported as pub(super) so frame.rs can call fi/fp/MEM_BASE
+// Exported pub(super) so frame.rs can access fi / fp / MEM_BASE
 pub(super) static mut MEM_BASE: PhysAddr = 0;
 static mut MEM_SIZE:  usize    = 0;
 static mut FRAME_BM:  [u64; MAX_FRAMES / 64] = [0u64; MAX_FRAMES / 64];
 static mut HINT:      usize    = 0;
 
-// Lock-free stats — read without holding MM_LOCK
+// Statystyki atomiczne (bez locka dla szybkiego odczytu)
 static FREE_FRAMES: AtomicUsize = AtomicUsize::new(0);
 
-// ── Internal helpers ──────────────────────────────────────────────────────────
+// ── Helpers ───────────────────────────────────────────────────────────────────
 
-/// Convert physical address to frame index.
 #[inline]
 pub(super) unsafe fn fi(p: PhysAddr) -> usize {
     ((p - MEM_BASE) / PAGE_SIZE as u64) as usize
 }
 
-/// Convert frame index to physical address.
 #[inline]
 pub(super) unsafe fn fp(i: usize) -> PhysAddr {
     MEM_BASE + i as u64 * PAGE_SIZE as u64
@@ -76,9 +74,9 @@ unsafe fn mark_free(i: usize) {
     }
 }
 
-// ── Initialization ────────────────────────────────────────────────────────────
+// ── Inicjalizacja ─────────────────────────────────────────────────────────────
 
-/// Initialize the PMM. Must be called exactly once during kernel startup.
+/// Initialise the PMM. Must be called exactly once during kernel startup.
 /// `base` must be PAGE_SIZE-aligned; `size` is the number of available bytes.
 pub unsafe fn mm_init(base: PhysAddr, size: usize) {
     MEM_BASE = base;
@@ -90,26 +88,26 @@ pub unsafe fn mm_init(base: PhysAddr, size: usize) {
         core::mem::size_of_val(&FRAME_BM),
     );
 
-    // Frame 0 is always reserved — prevents accidental null-dereferences
+    // Ramka 0 zawsze zarezerwowana (NULL protection)
     mark_used(0);
 
     let total = size / PAGE_SIZE;
     FREE_FRAMES.store(total.saturating_sub(1), Ordering::Relaxed);
     HINT = 0;
 
-    // Initialise refcounts for all available frames
+    // Inicjalizuj refcount dla wszystkich ramek
     for i in 1..total.min(MAX_FRAMES) {
         super::frame::frame_init(fp(i));
     }
 
     serial_print("[PMM] ");
     pnum_serial(size / 1024 / 1024);
-    serial_print(" MiB available (");
+    serial_print(" MiB dostepne (");
     pnum_serial(total);
-    serial_print(" frames)\n");
+    serial_print(" ramek)\n");
 }
 
-// ── Allocation / deallocation ─────────────────────────────────────────────────
+// ── Alokacja / zwolnienie ─────────────────────────────────────────────────────
 
 /// Allocate one 4K frame without acquiring MM_LOCK (caller must hold it).
 pub unsafe fn mm_alloc_nolock() -> PhysAddr {
@@ -136,7 +134,7 @@ pub unsafe fn mm_alloc_nolock() -> PhysAddr {
             }
         }
     }
-    crate::panic_no_dyn("[PMM] OOM — no free frames");
+    crate::panic_no_dyn("[PMM] OOM — brak wolnych ramek");
 }
 
 /// Allocate one 4K frame (acquires MM_LOCK).
@@ -163,14 +161,13 @@ pub unsafe fn mm_alloc_huge() -> PhysAddr {
 
     let total = MEM_SIZE / PAGE_SIZE;
     // Search for 512 contiguous free frames aligned to 512
-    // Start at frame 512 — skip the first 2 MB used by the kernel
-    let mut i = 512usize;
+    let mut i = 512usize; // zacznij od 512 (pomijamy pierwsze 2MB dla kernela)
     while i + 512 <= total.min(MAX_FRAMES) {
         if i % 512 != 0 { i = (i + 511) & !(511); continue; }
 
-        // Check whether all 512 frames are free (8 bitmap words)
+        // Check whether all 512 frames are free
         let mut ok = true;
-        'outer: for w in 0..8usize {
+        'outer: for w in 0..8usize { // 512/64 = 8 words
             let word_idx = (i / 64) + w;
             if FRAME_BM[word_idx] != 0 { ok = false; break 'outer; }
         }
@@ -198,15 +195,15 @@ pub unsafe fn mm_free_nolock(p: PhysAddr) {
 }
 
 /// Free one frame (acquires MM_LOCK).
-/// Prefer calling through frame::frame_dec() when using refcounting —
-/// do not call directly if CoW tracking is active on this frame.
+/// Prefer calling through frame::frame_dec() when using CoW refcounting.
+/// 
 pub unsafe fn mm_free_phys(p: PhysAddr) {
     MM_LOCK.lock();
     mm_free_nolock(p);
     MM_LOCK.unlock();
 }
 
-/// Free a 2 MB huge page (512 frames).
+/// Zwolnij huge page (512 ramek).
 pub unsafe fn mm_free_huge(p: PhysAddr) {
     if p % HUGE_SIZE as u64 != 0 { return; }
     MM_LOCK.lock();
@@ -216,7 +213,7 @@ pub unsafe fn mm_free_huge(p: PhysAddr) {
     MM_LOCK.unlock();
 }
 
-// ── Statistics ────────────────────────────────────────────────────────────────
+// ── Statystyki ────────────────────────────────────────────────────────────────
 
 pub unsafe fn mm_free_kb()  -> usize { FREE_FRAMES.load(Ordering::Relaxed) * PAGE_SIZE / 1024 }
 pub unsafe fn mm_used_kb()  -> usize {
@@ -227,15 +224,18 @@ pub unsafe fn mm_used_kb()  -> usize {
 pub unsafe fn mm_total_kb() -> usize { (MEM_SIZE / PAGE_SIZE) * PAGE_SIZE / 1024 }
 pub unsafe fn mm_free_pages() -> usize { FREE_FRAMES.load(Ordering::Relaxed) }
 
-/// Print a PMM status report to the serial port.
+/// Wypisz raport stanu PMM na serial.
 pub unsafe fn mm_dump_stats() {
-    serial_print("[PMM] free=");  pnum_serial(mm_free_kb());
-    serial_print(" KB used=");    pnum_serial(mm_used_kb());
-    serial_print(" KB total=");   pnum_serial(mm_total_kb());
+    serial_print("[PMM] free=");
+    pnum_serial(mm_free_kb());
+    serial_print(" KB used=");
+    pnum_serial(mm_used_kb());
+    serial_print(" KB total=");
+    pnum_serial(mm_total_kb());
     serial_print(" KB\n");
 }
 
-// ── Serial number printer (no-alloc) ─────────────────────────────────────────
+// ── Helper do wypisywania liczb na serial (no-alloc) ─────────────────────────
 
 pub(super) unsafe fn pnum_serial(mut v: usize) {
     if v == 0 { serial_print("0"); return; }
