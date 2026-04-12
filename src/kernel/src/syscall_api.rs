@@ -15,49 +15,48 @@ pub mod nr {
     pub const THREAD_ID:    u64 = 11;
     pub const TIME:         u64 = 12;
     pub const DEBUG_PRINT:  u64 = 13;
+    pub const GET_FB_INFO:  u64 = 14; // query framebuffer layout + map into userspace
 }
-
 
 pub mod err {
-    pub const OK:          i64 =  0;
-    pub const INVAL:       i64 = -1;  
-    pub const NOMEM:       i64 = -2; 
-    pub const NOSLOT:      i64 = -3; 
-    pub const FAULT:       i64 = -4; 
-    pub const AGAIN:       i64 = -5; 
-    pub const NOSYS:       i64 = -6;  
-    pub const PERM:        i64 = -7;  
+    pub const OK:    i64 =  0;
+    pub const INVAL: i64 = -1;
+    pub const NOMEM: i64 = -2;
+    pub const NOSLOT:i64 = -3;
+    pub const FAULT: i64 = -4;
+    pub const AGAIN: i64 = -5;
+    pub const NOSYS: i64 = -6;
+    pub const PERM:  i64 = -7;
 }
 
+// ── Shared structs ────────────────────────────────────────────────────────────
 
 #[repr(C)]
 pub struct SpawnArgs {
-    pub entry:    u64,        
-    pub arg:      u64,        
-    pub stack_sz: u32,        
-    pub flags:    u32,        
-    pub name:     [u8; 16],   
+    pub entry:    u64,
+    pub arg:      u64,
+    pub stack_sz: u32,
+    pub flags:    u32,
+    pub name:     [u8; 16],
 }
 
 pub mod spawn_flags {
-    pub const KERNEL: u32 = 0;       
-    pub const USER:   u32 = 1 << 0;  
-    pub const DETACH: u32 = 1 << 1;  
+    pub const KERNEL: u32 = 0;
+    pub const USER:   u32 = 1 << 0;
+    pub const DETACH: u32 = 1 << 1;
 }
-
 
 #[repr(C)]
 pub struct IpcMsg {
-    pub from:  u32,           
-    pub to:    u32,           
-    pub tag:   u32,           
+    pub from:  u32,
+    pub to:    u32,
+    pub tag:   u32,
     pub _pad:  u32,
-    pub data:  [u64; 4],      
-    pub ptr:   u64,           
-    pub len:   u32,           
+    pub data:  [u64; 4],
+    pub ptr:   u64,
+    pub len:   u32,
     pub _pad2: u32,
 }
-
 
 #[repr(C)]
 pub struct ThreadInfo {
@@ -66,29 +65,50 @@ pub struct ThreadInfo {
     pub _pad: [u8; 3],
 }
 
-
 #[repr(C)]
 pub struct TimeInfo {
-    pub ticks:  u64,   
-    pub uptime: u64,   
+    pub ticks:  u64,
+    pub uptime: u64,
 }
 
+/// Framebuffer descriptor written into userspace by GET_FB_INFO.
+/// The kernel maps the physical FB pages into the calling process and
+/// fills this struct with the layout information.
+///
+/// After a successful call the process can write pixels directly to
+/// `virt_addr` as a flat BGRX / XRGB 32-bpp buffer.
+#[repr(C)]
+pub struct FbInfo {
+    /// Virtual address at which the framebuffer is mapped in userspace.
+    pub virt_addr: u64,
+    /// Physical base address of the framebuffer (informational).
+    pub phys_addr: u64,
+    /// Width in pixels.
+    pub width:     u32,
+    /// Height in pixels.
+    pub height:    u32,
+    /// Bytes per row (may be larger than width * 4 due to hardware padding).
+    pub pitch:     u32,
+    /// Bits per pixel (always 32 for the current GRUB linear FB).
+    pub bpp:       u32,
+    /// Total size of the framebuffer in bytes.
+    pub size:      u64,
+}
 
 pub type SyscallFn = unsafe fn(*mut crate::perm::TF) -> i64;
 
+// ── Dispatcher ────────────────────────────────────────────────────────────────
 
- 
 #[no_mangle]
 pub unsafe fn syscall_dispatch_v2(tf: *mut crate::perm::TF) {
     let num = (*tf).rax;
     let cs  = (*tf).cs;
- 
-    // Policy gate — check before dispatching
+
     if let Err(e) = crate::root_policy::check_syscall(num, cs) {
         (*tf).rax = e as u64;
         return;
     }
- 
+
     let ret: i64 = match num {
         nr::EXIT        => sys_exit(tf),
         nr::WRITE       => sys_write(tf),
@@ -104,10 +124,73 @@ pub unsafe fn syscall_dispatch_v2(tf: *mut crate::perm::TF) {
         nr::THREAD_ID   => sys_thread_id(tf),
         nr::TIME        => sys_time(tf),
         nr::DEBUG_PRINT => sys_debug_print(tf),
+        nr::GET_FB_INFO => sys_get_fb_info(tf),
         _               => err::NOSYS,
     };
     (*tf).rax = ret as u64;
 }
+
+// ── sys_get_fb_info ───────────────────────────────────────────────────────────
+
+/// GET_FB_INFO — rdi = pointer to FbInfo struct in userspace.
+///
+/// The kernel:
+///   1. Reads the physical FB address and dimensions from display::fb.
+///   2. Maps every FB page into the calling process at a fixed user VA
+///      (FB_USER_VADDR = 0x0000_6000_0000_0000).
+///   3. Fills the FbInfo struct and returns 0.
+///
+/// The userspace virtual address is deterministic so the process can
+/// call this multiple times safely (vmap is idempotent for the same VA).
+unsafe fn sys_get_fb_info(tf: *mut crate::perm::TF) -> i64 {
+    use crate::threading::{THREADS, CUR};
+    use crate::mm::{valid_buf, vmap, PAGE_SIZE, PTE_W, PTE_U};
+    use crate::display::fb::{FB_PHYS, FB_WIDTH, FB_HEIGHT, FB_PITCH, FB_BPP};
+    use core::sync::atomic::Ordering;
+    use core::mem::size_of;
+
+    let ptr = (*tf).rdi;
+    let p4  = THREADS[CUR.load(Ordering::Relaxed)].cr3;
+
+    // Validate the output pointer
+    if !valid_buf(p4, ptr, size_of::<FbInfo>()) { return err::FAULT; }
+
+    let phys   = FB_PHYS;
+    let width  = FB_WIDTH;
+    let height = FB_HEIGHT;
+    let pitch  = FB_PITCH;
+    let bpp    = FB_BPP;
+
+    if phys == 0 || width == 0 || height == 0 { return err::INVAL; }
+
+    let fb_bytes  = pitch as u64 * height as u64;
+    let fb_pages  = ((fb_bytes + PAGE_SIZE as u64 - 1) / PAGE_SIZE as u64) as usize;
+
+    // Fixed user-space VA for the framebuffer mapping
+    const FB_USER_VADDR: u64 = 0x0000_6000_0000_0000;
+
+    // Map physical FB pages into the calling process (read-write, user)
+    for i in 0..fb_pages {
+        let va   = FB_USER_VADDR + i as u64 * PAGE_SIZE as u64;
+        let pa   = phys          + i as u64 * PAGE_SIZE as u64;
+        // PTE_W | PTE_U — no PTE_NX so the CPU can prefetch through it
+        vmap(p4, va, pa, PTE_W | PTE_U);
+    }
+
+    // Fill in the FbInfo struct in userspace memory
+    let info      = &mut *(ptr as *mut FbInfo);
+    info.virt_addr = FB_USER_VADDR;
+    info.phys_addr = phys;
+    info.width     = width;
+    info.height    = height;
+    info.pitch     = pitch;
+    info.bpp       = bpp;
+    info.size      = fb_bytes;
+
+    err::OK
+}
+
+// ── Existing syscall implementations (unchanged) ──────────────────────────────
 
 unsafe fn sys_exit(tf: *mut crate::perm::TF) -> i64 {
     use crate::threading::{THREADS, CUR, TS, NTHREADS, schedule};
@@ -143,7 +226,6 @@ unsafe fn sys_write(tf: *mut crate::perm::TF) -> i64 {
 }
 
 unsafe fn sys_read(tf: *mut crate::perm::TF) -> i64 {
-   
     use crate::threading::{THREADS, CUR};
     use crate::mm::valid_buf;
     use core::sync::atomic::Ordering;
@@ -196,7 +278,7 @@ unsafe fn sys_spawn(tf: *mut crate::perm::TF) -> i64 {
         let tid = crate::threading::spawn_user_on_cr3(name, args.entry, args.arg, new_cr3);
         if tid >= 0 { tid as i64 } else { err::NOSLOT }
     } else {
-        err::PERM  
+        err::PERM
     }
 }
 
@@ -219,22 +301,19 @@ unsafe fn sys_mem_alloc(tf: *mut crate::perm::TF) -> i64 {
     use crate::mm::{mm_alloc, vmap, PTE_W, PTE_U, PAGE_SIZE};
     use core::sync::atomic::Ordering;
 
-    let pages = (*tf).rdi as usize;  
-    let hint  = (*tf).rsi;           
+    let pages = (*tf).rdi as usize;
+    let hint  = (*tf).rsi;
 
-    if pages == 0 || pages > 512 { return err::INVAL; } 
+    if pages == 0 || pages > 512 { return err::INVAL; }
 
     let p4   = THREADS[CUR.load(Ordering::Relaxed)].cr3;
-
     let base = if hint != 0 && hint >= 0x1000 { hint } else { 0x1000_0000u64 };
-
     let vbase = (base + 0xFFF) & !0xFFF;
 
     for i in 0..pages {
         let vaddr = vbase + i as u64 * PAGE_SIZE as u64;
         let phys  = mm_alloc();
         if vmap(p4, vaddr, phys, PTE_W | PTE_U) != 0 {
-
             return if i > 0 { vbase as i64 } else { err::NOMEM };
         }
         core::ptr::write_bytes(phys as *mut u8, 0, PAGE_SIZE);

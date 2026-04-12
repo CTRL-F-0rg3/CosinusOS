@@ -16,6 +16,11 @@ pub const FB_PAGES: usize = (FB_SIZE + PAGE_SIZE - 1) / PAGE_SIZE;
 
 // ── Stan globalny ─────────────────────────────────────────────────────────────
 pub static mut FB_PHYS: u64 = 0;
+pub static mut FB_WIDTH:  u32 = 0;
+pub static mut FB_HEIGHT: u32 = 0;
+pub static mut FB_PITCH:  u32 = 0;
+pub static mut FB_BPP:    u32 = 32;
+
 // Wirtualny adres bazowy FB (identity map — phys == virt)
 pub static mut FB_VIRT: *mut u32 = core::ptr::null_mut();
 

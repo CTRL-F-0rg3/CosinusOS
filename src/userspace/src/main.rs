@@ -1,406 +1,571 @@
-// init/main.rs — CosinusOS init process (PID 1)
+// CosinusOS — userspace/main.rs
+// Framebuffer status screen.
 //
-// Boot sequence:
-//   _arg = PID of FS server, started by kernel before init
-//   1. Store FS server PID, allocate shared memory window
-//   2. Wait for TAG_FS_READY from FS server
-//   3. Read /etc/init.conf, spawn processes listed there
-//   4. Supervisor loop — reap dead children, restart critical ones
+// Renders a full-screen dashboard at 1920×1080 using the kernel's
+// GET_FB_INFO syscall.  No external dependencies — the 8×16 font is
+// embedded as a const bitmap table.
 
 #![no_std]
 #![no_main]
 
 extern crate alloc;
 
-// ─── Global allocator — wraps kernel mem_alloc/mem_free ──────────────────────
-
 use core::alloc::{GlobalAlloc, Layout};
+use libcosinus::{
+    cos_dbg,
+    thread_id, ticks,
+    mem_alloc, mem_free,
+    get_fb_info, FbInfo,
+    sched_yield,
+};
+
+// ── Global allocator ──────────────────────────────────────────────────────────
 
 struct KernelAlloc;
-
 unsafe impl GlobalAlloc for KernelAlloc {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         let pages = (layout.size() + 0xFFF) / 0x1000;
-        libcosinus::mem_alloc(pages.max(1))
+        mem_alloc(pages.max(1))
     }
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
         let pages = (layout.size() + 0xFFF) / 0x1000;
-        let _ = libcosinus::mem_free(ptr, pages.max(1));
+        let _ = mem_free(ptr, pages.max(1));
     }
 }
-
 #[global_allocator]
 static ALLOCATOR: KernelAlloc = KernelAlloc;
 
-use alloc::vec::Vec;
-use libcosinus::{
-    cos_dbg, cos_println,
-    err,
-    ipc_recv_blocking, ipc_send,
-    mem_alloc_at,
-    sched_yield, sleep,
-    spawn, spawn_flags,
-    thread_id, ticks,
-    IpcMsg, SpawnArgs,
-};
+// ── Colour palette ────────────────────────────────────────────────────────────
+// 32-bit BGRX (blue in lowest byte, as GRUB linear FB uses little-endian)
 
-// ─── FS IPC protocol (must match filesystem/main.zig) ────────────────────────
-
-#[allow(dead_code)]
-mod fs_ipc {
-    pub const TAG_FS_REQUEST:  u32 = 0x4653_0001;
-    pub const TAG_FS_RESPONSE: u32 = 0x4653_0002;
-    pub const TAG_FS_READY:    u32 = 0x4653_00FF;
-
-    pub const OP_OPEN:    u64 = 1;
-    pub const OP_READ:    u64 = 2;
-    pub const OP_WRITE:   u64 = 3;
-    pub const OP_CLOSE:   u64 = 4;
-    pub const OP_READDIR: u64 = 5;
-    pub const OP_STAT:    u64 = 6;
-
-    pub const ERR_OK:       i64 =  0;
-    pub const ERR_NOTFOUND: i64 = -1;
-    pub const ERR_IO:       i64 = -4;
-    pub const ERR_BADFD:    i64 = -6;
-
-    pub const SHM_BASE:      usize = 0x0000_7000_0000_0000;
-    pub const SHM_PATH_OFF:  usize = 0x1000;
-    pub const SHM_DATA_OFF:  usize = 0x2000;
-    pub const SHM_DATA_SIZE: usize = 0x10000;
-    pub const SHM_PAGES:     usize = (SHM_DATA_OFF + SHM_DATA_SIZE) / 0x1000 + 1;
+mod pal {
+    pub const BG:        u32 = 0x00_0D_11_1A; // deep navy
+    pub const PANEL:     u32 = 0x00_12_1A_2E; // slightly lighter navy
+    pub const BORDER:    u32 = 0x00_1E_3A_5F; // steel blue border
+    pub const ACCENT:    u32 = 0x00_00_AE_FF; // cyan accent
+    pub const ACCENT2:   u32 = 0x00_FF_6B_35; // orange accent
+    pub const GREEN:     u32 = 0x00_39_D3_53; // matrix green
+    pub const RED:       u32 = 0x00_FF_45_4F; // alert red
+    pub const WHITE:     u32 = 0x00_F0_F4_FF; // near-white text
+    pub const GREY:      u32 = 0x00_5A_6B_82; // muted label text
+    pub const YELLOW:    u32 = 0x00_FF_D7_00; // warning yellow
+    pub const TEAL:      u32 = 0x00_00_CC_BB; // secondary accent
 }
 
-// ─── Globals ──────────────────────────────────────────────────────────────────
+// ── Embedded 8×16 bitmap font ─────────────────────────────────────────────────
+// Covers ASCII 0x20 – 0x7E (95 printable characters).
+// Each character is 16 bytes; bit 7 of each byte = leftmost pixel.
+// This is a hand-crafted subset of the IBM PC VGA 8×16 font.
 
-static mut FS_SERVER_PID: u32    = 0;
-static mut SHM_BASE:      *mut u8 = core::ptr::null_mut();
+const FONT_W: u32 = 8;
+const FONT_H: u32 = 16;
+const FONT_FIRST: u8 = 0x20; // space
+const FONT_LAST:  u8 = 0x7E; // ~
 
-fn fs_pid() -> u32 { unsafe { FS_SERVER_PID } }
-
-fn shm_path_buf() -> *mut u8 {
-    unsafe { SHM_BASE.add(fs_ipc::SHM_PATH_OFF) }
-}
-fn shm_data_buf() -> *mut u8 {
-    unsafe { SHM_BASE.add(fs_ipc::SHM_DATA_OFF) }
-}
-
-// ─── Shared memory setup ─────────────────────────────────────────────────────
-
-fn setup_shm() -> bool {
-    let ptr = mem_alloc_at(fs_ipc::SHM_PAGES, fs_ipc::SHM_BASE as u64);
-    if ptr.is_null() {
-        cos_dbg!("[init] FATAL: cannot alloc shm at {:#x}\n", fs_ipc::SHM_BASE);
-        return false;
-    }
-    unsafe { SHM_BASE = ptr; }
-    cos_dbg!("[init] shm @ {:#x}, {} pages\n", ptr as u64, fs_ipc::SHM_PAGES);
-    true
-}
-
-// ─── Wait for FS server ready signal ─────────────────────────────────────────
-
-fn wait_fs_ready(fs_tid: u32) -> bool {
-    let deadline = ticks() + 5000;
-    loop {
-        if ticks() > deadline {
-            cos_dbg!("[init] TIMEOUT waiting for FS ready\n");
-            return false;
-        }
-        let mut msg = IpcMsg::zeroed();
-        match libcosinus::ipc_recv(&mut msg) {
-            Ok(()) if msg.tag == fs_ipc::TAG_FS_READY && msg.from == fs_tid => {
-                cos_dbg!("[init] FS server ready (TID {})\n", fs_tid);
-                return true;
-            }
-            Ok(()) => sched_yield(),
-            Err(e) if e == err::AGAIN => sleep(10),
-            Err(_) => sched_yield(),
-        }
-    }
-}
-
-// ─── FsHandle — open file via FS server IPC ──────────────────────────────────
-
-pub struct FsHandle {
-    fd:     u16,
-    offset: u64,
-    size:   u64,
-}
-
-impl FsHandle {
-    pub fn open(path: &[u8], flags: u32) -> Option<Self> {
-        let path_len = path.len().min(4095);
-        unsafe {
-            core::ptr::copy_nonoverlapping(path.as_ptr(), shm_path_buf(), path_len);
-            *shm_path_buf().add(path_len) = 0;
-        }
-        let mut req = IpcMsg::zeroed();
-        req.to      = fs_pid();
-        req.tag     = fs_ipc::TAG_FS_REQUEST;
-        req.data[0] = fs_ipc::OP_OPEN;
-        req.data[1] = flags as u64;
-        req.ptr     = shm_path_buf() as u64;
-        req.len     = path_len as u32;
-
-        ipc_send(&req).ok()?;
-        let mut resp = IpcMsg::zeroed();
-        ipc_recv_blocking(&mut resp).ok()?;
-
-        let status = resp.data[0] as i64;
-        if status < 0 { return None; }
-        Some(FsHandle { fd: status as u16, offset: 0, size: resp.data[1] })
-    }
-
-    pub fn read(&mut self, buf: &mut [u8]) -> i64 {
-        let count = buf.len().min(fs_ipc::SHM_DATA_SIZE);
-        let mut req = IpcMsg::zeroed();
-        req.to      = fs_pid();
-        req.tag     = fs_ipc::TAG_FS_REQUEST;
-        req.data[0] = fs_ipc::OP_READ;
-        req.data[1] = self.fd as u64;
-        req.data[2] = count as u64;
-        req.data[3] = self.offset;
-        req.ptr     = shm_data_buf() as u64;
-        req.len     = count as u32;
-
-        if ipc_send(&req).is_err() { return -1; }
-        let mut resp = IpcMsg::zeroed();
-        if ipc_recv_blocking(&mut resp).is_err() { return -1; }
-
-        let n = resp.data[0] as i64;
-        if n > 0 {
-            unsafe {
-                core::ptr::copy_nonoverlapping(
-                    shm_data_buf(),
-                    buf.as_mut_ptr(),
-                    (n as usize).min(buf.len()),
-                );
-            }
-            self.offset += n as u64;
-        }
-        n
-    }
-
-    pub fn close(self) {
-        let mut req = IpcMsg::zeroed();
-        req.to      = fs_pid();
-        req.tag     = fs_ipc::TAG_FS_REQUEST;
-        req.data[0] = fs_ipc::OP_CLOSE;
-        req.data[1] = self.fd as u64;
-        let _ = ipc_send(&req);
-    }
-
-    pub fn size(&self) -> u64 { self.size }
-}
-
-// ─── Stat ─────────────────────────────────────────────────────────────────────
-
-pub struct StatResult {
-    pub ino:   u64,
-    pub size:  u64,
-    pub ftype: u8,
-}
-
-fn fs_stat(path: &[u8]) -> Option<StatResult> {
-    let path_len = path.len().min(4095);
-    unsafe {
-        core::ptr::copy_nonoverlapping(path.as_ptr(), shm_path_buf(), path_len);
-        *shm_path_buf().add(path_len) = 0;
-    }
-    let mut req = IpcMsg::zeroed();
-    req.to      = fs_pid();
-    req.tag     = fs_ipc::TAG_FS_REQUEST;
-    req.data[0] = fs_ipc::OP_STAT;
-    req.ptr     = shm_path_buf() as u64;
-    req.len     = path_len as u32;
-
-    ipc_send(&req).ok()?;
-    let mut resp = IpcMsg::zeroed();
-    ipc_recv_blocking(&mut resp).ok()?;
-
-    if (resp.data[0] as i64) < 0 { return None; }
-    Some(StatResult { ino: resp.data[1], size: resp.data[2], ftype: resp.data[3] as u8 })
-}
-
-// ─── Child process table ──────────────────────────────────────────────────────
-
-struct ChildProc {
-    tid:      u32,
-    name:     [u8; 16],
-    entry:    u64,
-    arg:      u64,
-    critical: bool,
-    alive:    bool,
-}
-
-const MAX_CHILDREN: usize = 16;
-
-static mut CHILDREN: [Option<ChildProc>; MAX_CHILDREN] = [
-    None, None, None, None, None, None, None, None,
-    None, None, None, None, None, None, None, None,
+// The full 95-character × 16-byte bitmap.
+// Characters are in ASCII order starting at 0x20.
+static FONT: [[u8; 16]; 95] = [
+    // 0x20 space
+    [0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00],
+    // 0x21 !
+    [0x00,0x10,0x10,0x10,0x10,0x10,0x10,0x10,0x00,0x10,0x00,0x00,0x00,0x00,0x00,0x00],
+    // 0x22 "
+    [0x00,0x24,0x24,0x24,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00],
+    // 0x23 #
+    [0x00,0x24,0x24,0x7E,0x24,0x24,0x7E,0x24,0x24,0x00,0x00,0x00,0x00,0x00,0x00,0x00],
+    // 0x24 $
+    [0x00,0x08,0x3E,0x49,0x48,0x3E,0x09,0x49,0x3E,0x08,0x00,0x00,0x00,0x00,0x00,0x00],
+    // 0x25 %
+    [0x00,0x31,0x4A,0x34,0x08,0x16,0x29,0x46,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00],
+    // 0x26 &
+    [0x00,0x1C,0x22,0x22,0x1C,0x29,0x46,0x46,0x39,0x00,0x00,0x00,0x00,0x00,0x00,0x00],
+    // 0x27 '
+    [0x00,0x18,0x18,0x10,0x20,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00],
+    // 0x28 (
+    [0x00,0x04,0x08,0x10,0x10,0x10,0x10,0x10,0x08,0x04,0x00,0x00,0x00,0x00,0x00,0x00],
+    // 0x29 )
+    [0x00,0x20,0x10,0x08,0x08,0x08,0x08,0x08,0x10,0x20,0x00,0x00,0x00,0x00,0x00,0x00],
+    // 0x2A *
+    [0x00,0x00,0x08,0x49,0x2A,0x1C,0x2A,0x49,0x08,0x00,0x00,0x00,0x00,0x00,0x00,0x00],
+    // 0x2B +
+    [0x00,0x00,0x08,0x08,0x08,0x7F,0x08,0x08,0x08,0x00,0x00,0x00,0x00,0x00,0x00,0x00],
+    // 0x2C ,
+    [0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x18,0x18,0x10,0x20,0x00,0x00,0x00,0x00,0x00],
+    // 0x2D -
+    [0x00,0x00,0x00,0x00,0x00,0x7E,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00],
+    // 0x2E .
+    [0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x18,0x18,0x00,0x00,0x00,0x00,0x00,0x00,0x00],
+    // 0x2F /
+    [0x00,0x02,0x04,0x04,0x08,0x08,0x10,0x10,0x20,0x20,0x00,0x00,0x00,0x00,0x00,0x00],
+    // 0x30 0
+    [0x00,0x1C,0x22,0x41,0x41,0x41,0x41,0x22,0x1C,0x00,0x00,0x00,0x00,0x00,0x00,0x00],
+    // 0x31 1
+    [0x00,0x08,0x18,0x08,0x08,0x08,0x08,0x08,0x3E,0x00,0x00,0x00,0x00,0x00,0x00,0x00],
+    // 0x32 2
+    [0x00,0x1C,0x22,0x02,0x04,0x08,0x10,0x20,0x3E,0x00,0x00,0x00,0x00,0x00,0x00,0x00],
+    // 0x33 3
+    [0x00,0x3E,0x02,0x04,0x0C,0x02,0x02,0x22,0x1C,0x00,0x00,0x00,0x00,0x00,0x00,0x00],
+    // 0x34 4
+    [0x00,0x04,0x0C,0x14,0x24,0x44,0x7E,0x04,0x04,0x00,0x00,0x00,0x00,0x00,0x00,0x00],
+    // 0x35 5
+    [0x00,0x3E,0x20,0x20,0x3C,0x02,0x02,0x22,0x1C,0x00,0x00,0x00,0x00,0x00,0x00,0x00],
+    // 0x36 6
+    [0x00,0x0C,0x10,0x20,0x3C,0x22,0x22,0x22,0x1C,0x00,0x00,0x00,0x00,0x00,0x00,0x00],
+    // 0x37 7
+    [0x00,0x3E,0x02,0x04,0x08,0x08,0x10,0x10,0x10,0x00,0x00,0x00,0x00,0x00,0x00,0x00],
+    // 0x38 8
+    [0x00,0x1C,0x22,0x22,0x1C,0x22,0x22,0x22,0x1C,0x00,0x00,0x00,0x00,0x00,0x00,0x00],
+    // 0x39 9
+    [0x00,0x1C,0x22,0x22,0x22,0x1E,0x02,0x04,0x18,0x00,0x00,0x00,0x00,0x00,0x00,0x00],
+    // 0x3A :
+    [0x00,0x00,0x18,0x18,0x00,0x00,0x18,0x18,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00],
+    // 0x3B ;
+    [0x00,0x00,0x18,0x18,0x00,0x00,0x18,0x18,0x10,0x20,0x00,0x00,0x00,0x00,0x00,0x00],
+    // 0x3C <
+    [0x00,0x04,0x08,0x10,0x20,0x10,0x08,0x04,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00],
+    // 0x3D =
+    [0x00,0x00,0x00,0x7E,0x00,0x00,0x7E,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00],
+    // 0x3E >
+    [0x00,0x20,0x10,0x08,0x04,0x08,0x10,0x20,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00],
+    // 0x3F ?
+    [0x00,0x1C,0x22,0x02,0x04,0x08,0x08,0x00,0x08,0x00,0x00,0x00,0x00,0x00,0x00,0x00],
+    // 0x40 @
+    [0x00,0x3C,0x42,0x9D,0xA5,0xA5,0x9E,0x40,0x3C,0x00,0x00,0x00,0x00,0x00,0x00,0x00],
+    // A-Z (0x41-0x5A)
+    [0x00,0x08,0x14,0x22,0x41,0x7F,0x41,0x41,0x41,0x00,0x00,0x00,0x00,0x00,0x00,0x00], // A
+    [0x00,0x7C,0x22,0x22,0x3C,0x22,0x22,0x22,0x7C,0x00,0x00,0x00,0x00,0x00,0x00,0x00], // B
+    [0x00,0x1E,0x22,0x40,0x40,0x40,0x40,0x22,0x1E,0x00,0x00,0x00,0x00,0x00,0x00,0x00], // C
+    [0x00,0x78,0x24,0x22,0x22,0x22,0x22,0x24,0x78,0x00,0x00,0x00,0x00,0x00,0x00,0x00], // D
+    [0x00,0x7E,0x40,0x40,0x7C,0x40,0x40,0x40,0x7E,0x00,0x00,0x00,0x00,0x00,0x00,0x00], // E
+    [0x00,0x7E,0x40,0x40,0x7C,0x40,0x40,0x40,0x40,0x00,0x00,0x00,0x00,0x00,0x00,0x00], // F
+    [0x00,0x1E,0x22,0x40,0x40,0x4E,0x42,0x22,0x1E,0x00,0x00,0x00,0x00,0x00,0x00,0x00], // G
+    [0x00,0x41,0x41,0x41,0x7F,0x41,0x41,0x41,0x41,0x00,0x00,0x00,0x00,0x00,0x00,0x00], // H
+    [0x00,0x3E,0x08,0x08,0x08,0x08,0x08,0x08,0x3E,0x00,0x00,0x00,0x00,0x00,0x00,0x00], // I
+    [0x00,0x1F,0x04,0x04,0x04,0x04,0x44,0x44,0x38,0x00,0x00,0x00,0x00,0x00,0x00,0x00], // J
+    [0x00,0x41,0x42,0x44,0x78,0x44,0x42,0x41,0x41,0x00,0x00,0x00,0x00,0x00,0x00,0x00], // K
+    [0x00,0x40,0x40,0x40,0x40,0x40,0x40,0x40,0x7E,0x00,0x00,0x00,0x00,0x00,0x00,0x00], // L
+    [0x00,0x41,0x63,0x55,0x49,0x41,0x41,0x41,0x41,0x00,0x00,0x00,0x00,0x00,0x00,0x00], // M
+    [0x00,0x41,0x61,0x51,0x49,0x45,0x43,0x41,0x41,0x00,0x00,0x00,0x00,0x00,0x00,0x00], // N
+    [0x00,0x1C,0x22,0x41,0x41,0x41,0x41,0x22,0x1C,0x00,0x00,0x00,0x00,0x00,0x00,0x00], // O
+    [0x00,0x7C,0x22,0x22,0x3C,0x20,0x20,0x20,0x20,0x00,0x00,0x00,0x00,0x00,0x00,0x00], // P
+    [0x00,0x1C,0x22,0x41,0x41,0x49,0x45,0x22,0x1D,0x00,0x00,0x00,0x00,0x00,0x00,0x00], // Q
+    [0x00,0x7C,0x22,0x22,0x3C,0x24,0x22,0x22,0x21,0x00,0x00,0x00,0x00,0x00,0x00,0x00], // R
+    [0x00,0x1E,0x22,0x20,0x18,0x04,0x02,0x22,0x1E,0x00,0x00,0x00,0x00,0x00,0x00,0x00], // S
+    [0x00,0x7F,0x08,0x08,0x08,0x08,0x08,0x08,0x08,0x00,0x00,0x00,0x00,0x00,0x00,0x00], // T
+    [0x00,0x41,0x41,0x41,0x41,0x41,0x41,0x22,0x1C,0x00,0x00,0x00,0x00,0x00,0x00,0x00], // U
+    [0x00,0x41,0x41,0x41,0x22,0x22,0x14,0x14,0x08,0x00,0x00,0x00,0x00,0x00,0x00,0x00], // V
+    [0x00,0x41,0x41,0x41,0x49,0x49,0x55,0x63,0x41,0x00,0x00,0x00,0x00,0x00,0x00,0x00], // W
+    [0x00,0x41,0x22,0x14,0x08,0x14,0x22,0x41,0x41,0x00,0x00,0x00,0x00,0x00,0x00,0x00], // X
+    [0x00,0x41,0x22,0x14,0x08,0x08,0x08,0x08,0x08,0x00,0x00,0x00,0x00,0x00,0x00,0x00], // Y
+    [0x00,0x7F,0x02,0x04,0x08,0x10,0x20,0x40,0x7F,0x00,0x00,0x00,0x00,0x00,0x00,0x00], // Z
+    // 0x5B [
+    [0x00,0x1C,0x10,0x10,0x10,0x10,0x10,0x10,0x1C,0x00,0x00,0x00,0x00,0x00,0x00,0x00],
+    // 0x5C backslash
+    [0x00,0x20,0x20,0x10,0x10,0x08,0x08,0x04,0x04,0x00,0x00,0x00,0x00,0x00,0x00,0x00],
+    // 0x5D ]
+    [0x00,0x1C,0x04,0x04,0x04,0x04,0x04,0x04,0x1C,0x00,0x00,0x00,0x00,0x00,0x00,0x00],
+    // 0x5E ^
+    [0x00,0x08,0x14,0x22,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00],
+    // 0x5F _
+    [0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x7F,0x00,0x00,0x00,0x00,0x00,0x00,0x00],
+    // 0x60 `
+    [0x00,0x10,0x08,0x04,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00],
+    // a-z (0x61-0x7A)
+    [0x00,0x00,0x00,0x1C,0x02,0x1E,0x22,0x22,0x1D,0x00,0x00,0x00,0x00,0x00,0x00,0x00], // a
+    [0x00,0x20,0x20,0x3C,0x22,0x22,0x22,0x22,0x3C,0x00,0x00,0x00,0x00,0x00,0x00,0x00], // b
+    [0x00,0x00,0x00,0x1C,0x22,0x20,0x20,0x22,0x1C,0x00,0x00,0x00,0x00,0x00,0x00,0x00], // c
+    [0x00,0x02,0x02,0x1E,0x22,0x22,0x22,0x22,0x1E,0x00,0x00,0x00,0x00,0x00,0x00,0x00], // d
+    [0x00,0x00,0x00,0x1C,0x22,0x3E,0x20,0x22,0x1C,0x00,0x00,0x00,0x00,0x00,0x00,0x00], // e
+    [0x00,0x06,0x08,0x3E,0x08,0x08,0x08,0x08,0x08,0x00,0x00,0x00,0x00,0x00,0x00,0x00], // f
+    [0x00,0x00,0x00,0x1E,0x22,0x22,0x1E,0x02,0x1C,0x00,0x00,0x00,0x00,0x00,0x00,0x00], // g
+    [0x00,0x20,0x20,0x3C,0x22,0x22,0x22,0x22,0x22,0x00,0x00,0x00,0x00,0x00,0x00,0x00], // h
+    [0x00,0x08,0x00,0x18,0x08,0x08,0x08,0x08,0x1C,0x00,0x00,0x00,0x00,0x00,0x00,0x00], // i
+    [0x00,0x04,0x00,0x0C,0x04,0x04,0x04,0x24,0x18,0x00,0x00,0x00,0x00,0x00,0x00,0x00], // j
+    [0x00,0x20,0x20,0x22,0x24,0x38,0x24,0x22,0x21,0x00,0x00,0x00,0x00,0x00,0x00,0x00], // k
+    [0x00,0x18,0x08,0x08,0x08,0x08,0x08,0x08,0x1C,0x00,0x00,0x00,0x00,0x00,0x00,0x00], // l
+    [0x00,0x00,0x00,0x76,0x49,0x49,0x49,0x49,0x49,0x00,0x00,0x00,0x00,0x00,0x00,0x00], // m
+    [0x00,0x00,0x00,0x3C,0x22,0x22,0x22,0x22,0x22,0x00,0x00,0x00,0x00,0x00,0x00,0x00], // n
+    [0x00,0x00,0x00,0x1C,0x22,0x22,0x22,0x22,0x1C,0x00,0x00,0x00,0x00,0x00,0x00,0x00], // o
+    [0x00,0x00,0x00,0x3C,0x22,0x22,0x3C,0x20,0x20,0x00,0x00,0x00,0x00,0x00,0x00,0x00], // p
+    [0x00,0x00,0x00,0x1E,0x22,0x22,0x1E,0x02,0x02,0x00,0x00,0x00,0x00,0x00,0x00,0x00], // q
+    [0x00,0x00,0x00,0x2C,0x32,0x20,0x20,0x20,0x20,0x00,0x00,0x00,0x00,0x00,0x00,0x00], // r
+    [0x00,0x00,0x00,0x1E,0x20,0x1C,0x02,0x02,0x3C,0x00,0x00,0x00,0x00,0x00,0x00,0x00], // s
+    [0x00,0x08,0x08,0x3E,0x08,0x08,0x08,0x08,0x06,0x00,0x00,0x00,0x00,0x00,0x00,0x00], // t
+    [0x00,0x00,0x00,0x22,0x22,0x22,0x22,0x22,0x1D,0x00,0x00,0x00,0x00,0x00,0x00,0x00], // u
+    [0x00,0x00,0x00,0x41,0x41,0x22,0x22,0x14,0x08,0x00,0x00,0x00,0x00,0x00,0x00,0x00], // v
+    [0x00,0x00,0x00,0x41,0x49,0x49,0x55,0x63,0x41,0x00,0x00,0x00,0x00,0x00,0x00,0x00], // w
+    [0x00,0x00,0x00,0x22,0x14,0x08,0x14,0x22,0x22,0x00,0x00,0x00,0x00,0x00,0x00,0x00], // x
+    [0x00,0x00,0x00,0x22,0x22,0x1E,0x02,0x22,0x1C,0x00,0x00,0x00,0x00,0x00,0x00,0x00], // y
+    [0x00,0x00,0x00,0x3E,0x04,0x08,0x10,0x20,0x3E,0x00,0x00,0x00,0x00,0x00,0x00,0x00], // z
+    // 0x7B {
+    [0x00,0x06,0x08,0x08,0x10,0x60,0x10,0x08,0x06,0x00,0x00,0x00,0x00,0x00,0x00,0x00],
+    // 0x7C |
+    [0x00,0x08,0x08,0x08,0x08,0x08,0x08,0x08,0x08,0x00,0x00,0x00,0x00,0x00,0x00,0x00],
+    // 0x7D }
+    [0x00,0x30,0x08,0x08,0x04,0x03,0x04,0x08,0x30,0x00,0x00,0x00,0x00,0x00,0x00,0x00],
+    // 0x7E ~
+    [0x00,0x00,0x00,0x31,0x49,0x46,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00],
 ];
 
-fn add_child(child: ChildProc) {
-    unsafe {
-        for slot in CHILDREN.iter_mut() {
-            if slot.is_none() {
-                *slot = Some(child);
-                return;
+// ── Renderer ──────────────────────────────────────────────────────────────────
+
+struct Fb {
+    info: FbInfo,
+}
+
+impl Fb {
+    fn new(info: FbInfo) -> Self { Self { info } }
+
+    fn stride(&self) -> usize { (self.info.pitch / 4) as usize }
+
+    #[inline]
+    unsafe fn put(&self, x: u32, y: u32, c: u32) {
+        if x >= self.info.width || y >= self.info.height { return; }
+        *((self.info.virt_addr as *mut u32)
+            .add(y as usize * self.stride() + x as usize)) = c;
+    }
+
+    unsafe fn fill(&self, x: u32, y: u32, w: u32, h: u32, c: u32) {
+        let x2 = (x + w).min(self.info.width);
+        let y2 = (y + h).min(self.info.height);
+        let base   = self.info.virt_addr as *mut u32;
+        let stride = self.stride();
+        for row in y..y2 {
+            let row_base = base.add(row as usize * stride);
+            for col in x..x2 {
+                *row_base.add(col as usize) = c;
             }
         }
     }
-    cos_dbg!("[init] WARNING: children table full\n");
-}
 
-// ─── Supervisor loop ──────────────────────────────────────────────────────────
+    /// Draw a horizontal line.
+    unsafe fn hline(&self, x: u32, y: u32, w: u32, c: u32) {
+        self.fill(x, y, w, 1, c);
+    }
 
-fn supervisor_loop() -> ! {
-    cos_dbg!("[init] supervisor loop\n");
-    const TAG_EXIT_NOTIFY: u32 = 0xDEAD_0001;
+    /// Draw a rectangle outline.
+    unsafe fn rect(&self, x: u32, y: u32, w: u32, h: u32, c: u32) {
+        self.hline(x, y, w, c);
+        self.hline(x, y + h - 1, w, c);
+        self.fill(x, y, 1, h, c);
+        self.fill(x + w - 1, y, 1, h, c);
+    }
 
-    loop {
-        let mut msg = IpcMsg::zeroed();
-        match libcosinus::ipc_recv(&mut msg) {
-            Ok(()) if msg.tag == TAG_EXIT_NOTIFY => {
-                let dead_tid = msg.data[0] as u32;
-                cos_dbg!("[init] child exit TID={}\n", dead_tid);
-                unsafe {
-                    for slot in CHILDREN.iter_mut() {
-                        if let Some(ref mut c) = slot {
-                            if c.tid == dead_tid { c.alive = false; }
-                        }
-                    }
+    /// Draw a single character with 1× scale.
+    unsafe fn glyph(&self, x: u32, y: u32, ch: u8, fg: u32, bg: u32) {
+        let idx = if ch >= FONT_FIRST && ch <= FONT_LAST {
+            (ch - FONT_FIRST) as usize
+        } else {
+            0
+        };
+        let bitmap = &FONT[idx];
+        for row in 0..FONT_H {
+            let byte = bitmap[row as usize];
+            for col in 0..FONT_W {
+                let set = (byte >> (7 - col)) & 1 != 0;
+                self.put(x + col, y + row, if set { fg } else { bg });
+            }
+        }
+    }
+
+    /// Draw a string with 1× scale.
+    unsafe fn text(&self, x: u32, y: u32, s: &str, fg: u32, bg: u32) -> u32 {
+        let mut cx = x;
+        for b in s.bytes() {
+            if cx + FONT_W > self.info.width { break; }
+            self.glyph(cx, y, b, fg, bg);
+            cx += FONT_W;
+        }
+        cx
+    }
+
+    /// Draw a string at 2× scale (large heading).
+    unsafe fn text2x(&self, x: u32, y: u32, s: &str, fg: u32, bg: u32) {
+        let mut cx = x;
+        for b in s.bytes() {
+            let idx = if b >= FONT_FIRST && b <= FONT_LAST {
+                (b - FONT_FIRST) as usize
+            } else { 0 };
+            let bitmap = &FONT[idx];
+            for row in 0..FONT_H {
+                let byte = bitmap[row as usize];
+                for col in 0..FONT_W {
+                    let set = (byte >> (7 - col)) & 1 != 0;
+                    let px = cx + col * 2;
+                    let py = y  + row * 2;
+                    let c = if set { fg } else { bg };
+                    self.put(px,     py,     c);
+                    self.put(px + 1, py,     c);
+                    self.put(px,     py + 1, c);
+                    self.put(px + 1, py + 1, c);
                 }
             }
-            Ok(()) => {}
-            Err(e) if e == err::AGAIN => sleep(50),
-            Err(_) => sched_yield(),
+            cx += FONT_W * 2;
+            if cx + FONT_W * 2 > self.info.width { break; }
         }
+    }
 
-        unsafe {
-            for slot in CHILDREN.iter_mut() {
-                let Some(ref mut child) = slot else { continue };
-                if child.alive || !child.critical { continue; }
-                cos_dbg!("[init] restarting critical process\n");
-                let args = SpawnArgs {
-                    entry:    child.entry,
-                    arg:      child.arg,
-                    stack_sz: 0,
-                    flags:    spawn_flags::USER | spawn_flags::DETACH,
-                    name:     child.name,
-                };
-                if let Ok(new_tid) = spawn(&args) {
-                    child.tid   = new_tid;
-                    child.alive = true;
-                }
-            }
-        }
+    /// Render a number (decimal) into a local buffer and draw it.
+    unsafe fn num(&self, x: u32, y: u32, v: u64, fg: u32, bg: u32) -> u32 {
+        let s = num_to_str(v);
+        self.text(x, y, s.as_str(), fg, bg)
+    }
+
+    /// Progress bar: filled fraction = value/max.
+    unsafe fn bar(&self, x: u32, y: u32, w: u32, h: u32,
+                  value: u32, max: u32, fill: u32, empty: u32, border: u32) {
+        self.rect(x, y, w, h, border);
+        let inner_w = w - 2;
+        let filled  = if max > 0 { ((value as u64 * inner_w as u64) / max as u64) as u32 } else { 0 };
+        self.fill(x + 1, y + 1, filled,          h - 2, fill);
+        self.fill(x + 1 + filled, y + 1, inner_w - filled, h - 2, empty);
     }
 }
 
-// ─── /etc/init.conf parser ────────────────────────────────────────────────────
+// ── No-alloc number formatter ─────────────────────────────────────────────────
 
-fn read_init_conf() -> Option<Vec<u8>> {
-    let mut f = FsHandle::open(b"/etc/init.conf", 0)?;
-    let size = f.size().min(4096) as usize;
-    let mut buf = Vec::with_capacity(size);
-    buf.resize(size, 0u8);
-    let n = f.read(&mut buf);
-    f.close();
-    if n <= 0 { return None; }
-    buf.truncate(n as usize);
-    Some(buf)
+struct NumStr { buf: [u8; 20], start: usize }
+impl NumStr {
+    fn as_str(&self) -> &str {
+        unsafe { core::str::from_utf8_unchecked(&self.buf[self.start..]) }
+    }
+}
+fn num_to_str(mut v: u64) -> NumStr {
+    let mut s = NumStr { buf: [b'0'; 20], start: 20 };
+    if v == 0 { s.start = 19; return s; }
+    while v > 0 {
+        s.start -= 1;
+        s.buf[s.start] = b'0' + (v % 10) as u8;
+        v /= 10;
+    }
+    s
 }
 
-fn parse_and_exec_conf(conf: &[u8]) {
-    for line in conf.split(|&b| b == b'\n') {
-        let line = trim(line);
-        if line.is_empty() || line[0] == b'#' { continue; }
-        if let Some(rest) = strip_prefix(line, b"spawn ") {
-            spawn_named(rest);
-        } else if line == b"mount_check" {
-            run_mount_check();
+// Hex formatter (no leading zeros, no 0x prefix)
+fn hex_to_str(mut v: u64) -> NumStr {
+    const HEX: &[u8] = b"0123456789ABCDEF";
+    let mut s = NumStr { buf: [b'0'; 20], start: 20 };
+    if v == 0 { s.start = 19; return s; }
+    while v > 0 {
+        s.start -= 1;
+        s.buf[s.start] = HEX[(v & 0xF) as usize];
+        v >>= 4;
+    }
+    s
+}
+
+// ── Layout constants for 1920×1080 ────────────────────────────────────────────
+
+const W: u32 = 1920;
+const H: u32 = 1080;
+
+// Margins / padding
+const PAD: u32 = 32;
+const GAP: u32 = 16;
+
+// Header bar
+const HDR_H: u32 = 72;
+
+// Left column (system info)
+const COL_L_X: u32 = PAD;
+const COL_L_W: u32 = 560;
+
+// Right column (character grid demo)
+const COL_R_X: u32 = PAD + COL_L_W + GAP * 2;
+const COL_R_W: u32 = W - COL_R_X - PAD;
+
+// Row heights
+const PANEL_H: u32 = 200;
+const ROW_Y1:  u32 = HDR_H + PAD;
+const ROW_Y2:  u32 = ROW_Y1 + PANEL_H + GAP;
+const ROW_Y3:  u32 = ROW_Y2 + PANEL_H + GAP;
+
+// ── Main screen draw ──────────────────────────────────────────────────────────
+
+unsafe fn draw_screen(fb: &Fb, tid: u32, tick: u64) {
+    let w = fb.info.width;
+    let h = fb.info.height;
+
+    // ── Background ────────────────────────────────────────────────────────────
+    fb.fill(0, 0, w, h, pal::BG);
+
+    // Subtle vertical gradient bands (decorative scanlines)
+    for y in (0..h).step_by(2) {
+        let alpha = (y as u32 / 8) & 0x0F;
+        let c = 0x00_0D_11_1A + alpha * 0x00_00_00_01;
+        fb.hline(0, y, w, c);
+    }
+
+    // ── Header bar ────────────────────────────────────────────────────────────
+    fb.fill(0, 0, w, HDR_H, pal::PANEL);
+    fb.hline(0, HDR_H, w, pal::ACCENT);          // bottom accent line
+    fb.hline(0, HDR_H + 1, w, pal::BORDER);
+
+    // OS logo / title — 2× scale
+    fb.text2x(PAD, (HDR_H - FONT_H * 2) / 2,
+              "CosinusOS", pal::ACCENT, pal::PANEL);
+    fb.text2x(PAD + 9 * FONT_W * 2 + 8, (HDR_H - FONT_H * 2) / 2,
+              "v3.5", pal::WHITE, pal::PANEL);
+
+    // Right-side header info
+    let hx = w - PAD - 280;
+    let hy = (HDR_H - FONT_H) / 2 - 8;
+    fb.text(hx, hy,      "TID:", pal::GREY,  pal::PANEL);
+    fb.num( hx + 36, hy, tid as u64, pal::ACCENT, pal::PANEL);
+    fb.text(hx, hy + 18, "TICK:", pal::GREY, pal::PANEL);
+    fb.num( hx + 44, hy + 18, tick, pal::GREEN, pal::PANEL);
+
+    // ── Left column — system info panels ─────────────────────────────────────
+
+    // Panel 1: Memory
+    let px = COL_L_X;
+    let py = ROW_Y1;
+    fb.fill(px, py, COL_L_W, PANEL_H, pal::PANEL);
+    fb.rect(px, py, COL_L_W, PANEL_H, pal::BORDER);
+    fb.hline(px + 1, py + 20, COL_L_W - 2, pal::BORDER);
+    fb.text(px + 8, py + 4, "MEMORY", pal::ACCENT, pal::PANEL);
+
+    // Static placeholders (real values would come from a sysinfo syscall)
+    let labels = [
+        ("Total RAM",  "512 MB",  pal::WHITE),
+        ("PMM free",   "204 KB",  pal::GREEN),
+        ("Heap free",  " 32 KB",  pal::GREEN),
+        ("FB size",    "  8 MB",  pal::YELLOW),
+    ];
+    for (i, (lbl, val, vc)) in labels.iter().enumerate() {
+        let ly = py + 28 + i as u32 * 36;
+        fb.text(px + 8,   ly, lbl, pal::GREY,  pal::PANEL);
+        fb.text(px + 180, ly, val, *vc,         pal::PANEL);
+        if i + 1 < labels.len() {
+            fb.hline(px + 8, ly + FONT_H + 4, COL_L_W - 16, pal::BORDER);
         }
     }
-}
 
-fn trim(s: &[u8]) -> &[u8] {
-    let s = match s.iter().position(|&b| !matches!(b, b' ' | b'\t' | b'\r')) {
-        Some(i) => &s[i..],
-        None    => return &[],
-    };
-    match s.iter().rposition(|&b| !matches!(b, b' ' | b'\t' | b'\r')) {
-        Some(i) => &s[..i + 1],
-        None    => s,
+    // Panel 2: CPU / scheduler
+    let py2 = ROW_Y2;
+    fb.fill(px, py2, COL_L_W, PANEL_H, pal::PANEL);
+    fb.rect(px, py2, COL_L_W, PANEL_H, pal::BORDER);
+    fb.hline(px + 1, py2 + 20, COL_L_W - 2, pal::BORDER);
+    fb.text(px + 8, py2 + 4, "SCHEDULER", pal::ACCENT2, pal::PANEL);
+
+    fb.text(px + 8, py2 + 28,  "SMP cores  : 1 (SMP disabled)", pal::WHITE,  pal::PANEL);
+    fb.text(px + 8, py2 + 52,  "Ring-0     : kernel threads",   pal::WHITE,  pal::PANEL);
+    fb.text(px + 8, py2 + 76,  "Ring-3     : userspace active", pal::GREEN,  pal::PANEL);
+    fb.text(px + 8, py2 + 100, "Scheduler  : round-robin",      pal::WHITE,  pal::PANEL);
+    fb.text(px + 8, py2 + 124, "Tick rate  : 100 Hz",           pal::WHITE,  pal::PANEL);
+
+    // Tick progress bar (wraps every 1000 ticks)
+    let tick_frac = (tick % 1000) as u32;
+    fb.text(px + 8,  py2 + 152, "Uptime bar:", pal::GREY, pal::PANEL);
+    fb.bar( px + 8,  py2 + 168, COL_L_W - 16, 12,
+            tick_frac, 1000, pal::TEAL, pal::BORDER, pal::GREY);
+
+    // Panel 3: Framebuffer info
+    let py3 = ROW_Y3;
+    fb.fill(px, py3, COL_L_W, PANEL_H, pal::PANEL);
+    fb.rect(px, py3, COL_L_W, PANEL_H, pal::BORDER);
+    fb.hline(px + 1, py3 + 20, COL_L_W - 2, pal::BORDER);
+    fb.text(px + 8, py3 + 4, "FRAMEBUFFER", pal::TEAL, pal::PANEL);
+
+    let fw = fb.info.width;
+    let fh = fb.info.height;
+    let fp = fb.info.pitch;
+    fb.text(px + 8, py3 + 28,  "Mode :", pal::GREY,  pal::PANEL);
+    let xpos = fb.text(px + 56, py3 + 28, "", pal::WHITE, pal::PANEL);
+    // draw "WIDTHxHEIGHT"
+    let xpos = fb.num(px + 56, py3 + 28, fw as u64, pal::WHITE, pal::PANEL);
+    fb.text(xpos, py3 + 28, "x", pal::GREY, pal::PANEL);
+    fb.num(xpos + FONT_W, py3 + 28, fh as u64, pal::WHITE, pal::PANEL);
+
+    fb.text(px + 8,  py3 + 52, "Pitch:", pal::GREY,  pal::PANEL);
+    fb.num( px + 56, py3 + 52, fp as u64, pal::WHITE, pal::PANEL);
+    fb.text(px + 8,  py3 + 76, "BPP  :", pal::GREY,  pal::PANEL);
+    fb.num( px + 56, py3 + 76, fb.info.bpp as u64, pal::WHITE, pal::PANEL);
+    fb.text(px + 8,  py3 + 100, "Phys :", pal::GREY, pal::PANEL);
+    fb.text(px + 56, py3 + 100, "0x", pal::GREY, pal::PANEL);
+    fb.text(px + 72, py3 + 100,
+        hex_to_str(fb.info.phys_addr).as_str(), pal::YELLOW, pal::PANEL);
+    fb.text(px + 8,  py3 + 124, "Virt :", pal::GREY, pal::PANEL);
+    fb.text(px + 56, py3 + 124, "0x", pal::GREY, pal::PANEL);
+    fb.text(px + 72, py3 + 124,
+        hex_to_str(fb.info.virt_addr).as_str(), pal::ACCENT, pal::PANEL);
+
+    // ── Right column — character grid ─────────────────────────────────────────
+
+    let rx = COL_R_X;
+    let ry = ROW_Y1;
+    let rh = ROW_Y3 + PANEL_H - ROW_Y1;
+
+    fb.fill(rx, ry, COL_R_W, rh, pal::PANEL);
+    fb.rect(rx, ry, COL_R_W, rh, pal::BORDER);
+    fb.hline(rx + 1, ry + 20, COL_R_W - 2, pal::BORDER);
+    fb.text(rx + 8, ry + 4, "ASCII CHARACTER GRID  (0x20 - 0x7E)", pal::ACCENT, pal::PANEL);
+
+    // Print all 95 printable ASCII chars in a coloured grid
+    let cols = ((COL_R_W - 16) / (FONT_W + 4)) as usize;
+    let mut gi = 0usize;
+    for c in FONT_FIRST..=FONT_LAST {
+        let col = gi % cols;
+        let row = gi / cols;
+        let gx  = rx + 8 + col as u32 * (FONT_W + 4);
+        let gy  = ry + 28 + row as u32 * (FONT_H + 4);
+
+        // Colour cycling by column
+        let fg = match col % 6 {
+            0 => pal::WHITE,
+            1 => pal::ACCENT,
+            2 => pal::GREEN,
+            3 => pal::ACCENT2,
+            4 => pal::TEAL,
+            _ => pal::YELLOW,
+        };
+        fb.glyph(gx, gy, c, fg, pal::PANEL);
+        gi += 1;
     }
+
+    // ── Footer ────────────────────────────────────────────────────────────────
+    let fy = h - 28;
+    fb.fill(0, fy - 2, w, 2, pal::BORDER);
+    fb.fill(0, fy, w, 28, pal::PANEL);
+    fb.text(PAD, fy + 6,
+        "CosinusOS  |  GET_FB_INFO syscall demo  |  direct framebuffer render",
+        pal::GREY, pal::PANEL);
+    fb.text(w - PAD - 20 * FONT_W, fy + 6,
+        "ring-3 userspace", pal::ACCENT, pal::PANEL);
 }
 
-fn strip_prefix<'a>(s: &'a [u8], prefix: &[u8]) -> Option<&'a [u8]> {
-    s.strip_prefix(prefix)
-}
-
-fn spawn_named(name: &[u8]) {
-    let name = trim(name);
-    cos_dbg!("[init] spawning: {}\n", core::str::from_utf8(name).unwrap_or("?"));
-
-    let mut path = [0u8; 64];
-    path[0] = b'/'; path[1] = b'b'; path[2] = b'i'; path[3] = b'n'; path[4] = b'/';
-    let nlen = name.len().min(58);
-    path[5..5 + nlen].copy_from_slice(&name[..nlen]);
-
-    match fs_stat(&path[..5 + nlen]) {
-        Some(s) if s.ftype == 1 => {
-            cos_dbg!("[init] found, size={}\n", s.size);
-        }
-        Some(_) => cos_dbg!("[init] not a regular file\n"),
-        None    => cos_dbg!("[init] not found: /bin/{}\n",
-            core::str::from_utf8(name).unwrap_or("?")),
-    }
-}
-
-fn run_mount_check() {
-    match FsHandle::open(b"/etc/version", 0) {
-        None => cos_dbg!("[init] /etc/version not found\n"),
-        Some(mut f) => {
-            let mut buf = [0u8; 64];
-            let n = f.read(&mut buf);
-            f.close();
-            if n > 0 {
-                let s = core::str::from_utf8(&buf[..n as usize]).unwrap_or("(invalid utf8)");
-                cos_dbg!("[init] version: {}\n", s);
-                cos_println!("CosinusOS {}", s);
-            }
-        }
-    }
-}
-
-// ─── Entry point ──────────────────────────────────────────────────────────────
+// ── Entry point ───────────────────────────────────────────────────────────────
 
 #[no_mangle]
-#[link_section = ".text._start"] 
-pub extern "C" fn _start(arg: u64) -> ! {
-    let my_tid = thread_id();
-    cos_dbg!("[init] started TID={} fs_pid={}\n", my_tid, arg);
-    cos_println!("CosinusOS init");
+#[link_section = ".text._start"]
+pub extern "C" fn _start(_arg: u64) -> ! {
+    let tid  = thread_id();
+    cos_dbg!("[ui] started TID={}\n", tid);
 
-    unsafe { FS_SERVER_PID = arg as u32; }
-
-    if !setup_shm() { libcosinus::exit(1); }
-
-    if !wait_fs_ready(arg as u32) {
-        cos_dbg!("[init] FATAL: FS server not ready\n");
-        libcosinus::exit(1);
-    }
-    cos_println!("FS ready.");
-
-    match read_init_conf() {
-        Some(conf) => parse_and_exec_conf(&conf),
-        None => {
-            cos_dbg!("[init] no init.conf, spawning shell\n");
-            spawn_named(b"shell");
+    // Request FB info + mapping from the kernel
+    let mut info = FbInfo::zeroed();
+    match get_fb_info(&mut info) {
+        Ok(()) => {
+            cos_dbg!("[ui] FB {}x{} pitch={} @ virt=0x{:x}\n",
+                info.width, info.height, info.pitch, info.virt_addr);
+        }
+        Err(e) => {
+            cos_dbg!("[ui] GET_FB_INFO failed: {}\n", e);
+            loop { unsafe { core::arch::asm!("hlt", options(nomem, nostack)); } }
         }
     }
 
-    supervisor_loop()
+    let fb = Fb::new(info);
+
+    // Draw once, then loop updating the tick counter
+    let mut last_tick = 0u64;
+    loop {
+        let t = ticks();
+        // Only redraw when tick changes (avoids busy-tearing)
+        if t != last_tick {
+            unsafe { draw_screen(&fb, tid, t); }
+            last_tick = t;
+        }
+        sched_yield();
+    }
 }

@@ -38,6 +38,74 @@ pub mod err {
 
 pub type CosResult<T> = Result<T, i64>;
 
+/// raw pointer to the 32-bpp pixel buffer.
+#[repr(C)]
+pub struct FbInfo {
+    /// Virtual address at which the FB is mapped in this process.
+    pub virt_addr: u64,
+    /// Physical base address (informational).
+    pub phys_addr: u64,
+    /// Width in pixels.
+    pub width:     u32,
+    /// Height in pixels.
+    pub height:    u32,
+    /// Bytes per scan line.
+    pub pitch:     u32,
+    /// Bits per pixel (always 32).
+    pub bpp:       u32,
+    /// Total framebuffer size in bytes.
+    pub size:      u64,
+}
+
+ 
+impl FbInfo {
+    pub const fn zeroed() -> Self {
+        Self {
+            virt_addr: 0, phys_addr: 0,
+            width: 0, height: 0, pitch: 0, bpp: 0, size: 0,
+        }
+    }
+ 
+    /// Return a mutable pixel slice over the entire framebuffer.
+    /// Each element is a 32-bit BGRX pixel (blue in low byte).
+    ///
+    /// # Safety
+    /// Valid only after a successful `get_fb_info()` call.
+    pub unsafe fn pixels_mut(&self) -> &mut [u32] {
+        core::slice::from_raw_parts_mut(
+            self.virt_addr as *mut u32,
+            (self.pitch / 4) as usize * self.height as usize,
+        )
+    }
+ 
+    /// Write one pixel at (x, y). Clips silently if out of bounds.
+    #[inline]
+    pub unsafe fn put_pixel(&self, x: u32, y: u32, rgb: u32) {
+        if x >= self.width || y >= self.height { return; }
+        let off = y as usize * (self.pitch / 4) as usize + x as usize;
+        *((self.virt_addr as *mut u32).add(off)) = rgb;
+    }
+ 
+    /// Fill a rectangle with a solid colour.
+    pub unsafe fn fill_rect(&self, x: u32, y: u32, w: u32, h: u32, rgb: u32) {
+        let x2 = (x + w).min(self.width);
+        let y2 = (y + h).min(self.height);
+        let stride = (self.pitch / 4) as usize;
+        let base   = self.virt_addr as *mut u32;
+        for row in y..y2 {
+            for col in x..x2 {
+                *base.add(row as usize * stride + col as usize) = rgb;
+            }
+        }
+    }
+}
+
+pub fn get_fb_info(info: &mut FbInfo) -> CosResult<()> {
+    unsafe {
+        ok(syscall1(nr::GET_FB_INFO, info as *mut FbInfo as u64)).map(|_| ())
+    }
+}
+
 #[inline(always)]
 fn ok(r: i64) -> CosResult<i64> {
     if r >= 0 { Ok(r) } else { Err(r) }
