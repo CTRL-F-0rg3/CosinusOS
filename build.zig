@@ -101,8 +101,14 @@ pub fn build(b: *std.Build) void {
         "-cpu",
         "qemu64",
         "-smp",
-        "2",
+        "1",
         "-no-reboot",
+        "-device",
+        "qemu-xhci",
+        "-device",
+        "usb-kbd",
+        "-device",
+        "usb-mouse",
     }) catch unreachable;
 
     if (debug) args.appendSlice(b.allocator, &.{
