@@ -1,37 +1,47 @@
 // CosinusOS — display/fb.rs
-// Framebuffer: alokacja, pixel ops, software tryb tekstowy
-// Tryb tekstowy emuluje VGA 80×25 na framebufferze 1920×1080
-// (kernel może pisać przez ten sam print/putc API co przez VGA 0xB8000)
+// Framebuffer: allocation, pixel operations, software text mode.
+// Text mode emulates VGA 80×25 on a 1920×1080 framebuffer
+// (the kernel can write through the same print/putc API as VGA 0xB8000).
 
 use crate::mm::{mm_alloc, vmap, PAGE_SIZE, PTE_W, K_P4};
 use crate::debug::{serial_print, serial_hex, num_str};
 
-// ── Wymiary ───────────────────────────────────────────────────────────────────
+// ── Dimensions ────────────────────────────────────────────────────────────────
 pub const FB_W:     usize = 1920;
 pub const FB_H:     usize = 1080;
-pub const FB_BPP:   usize = 4;       // XRGB8888
-pub const FB_PITCH: usize = FB_W * FB_BPP;
+pub const FB_BPP:   usize = 4;               // XRGB8888 — bytes per pixel
+pub const FB_PITCH: usize = FB_W * FB_BPP;   // bytes per scan line
 pub const FB_SIZE:  usize = FB_W * FB_H * FB_BPP;
 pub const FB_PAGES: usize = (FB_SIZE + PAGE_SIZE - 1) / PAGE_SIZE;
 
-// ── Stan globalny ─────────────────────────────────────────────────────────────
-pub static mut FB_PHYS: u64 = 0;
-pub static mut FB_WIDTH:  u32 = 0;
-pub static mut FB_HEIGHT: u32 = 0;
-pub static mut FB_PITCH:  u32 = 0;
-pub static mut FB_BPP:    u32 = 32;
+// ── Runtime framebuffer state ─────────────────────────────────────────────────
+// These are set by fb_alloc() and read by the GET_FB_INFO syscall.
 
-// Wirtualny adres bazowy FB (identity map — phys == virt)
+/// Physical base address of the framebuffer.
+pub static mut FB_PHYS:   u64 = 0;
+/// Framebuffer width in pixels (set at runtime; matches FB_W for now).
+pub static mut FB_WIDTH:  u32 = 0;
+/// Framebuffer height in pixels.
+pub static mut FB_HEIGHT: u32 = 0;
+/// Bytes per scan line (runtime value for GET_FB_INFO).
+pub static mut FB_PITCH_RT: u32 = 0;
+/// Bits per pixel (always 32 = XRGB8888).
+pub static mut FB_BPP_RT:   u32 = 32;
+
+// Virtual base address of the FB (identity-mapped: phys == virt).
 pub static mut FB_VIRT: *mut u32 = core::ptr::null_mut();
 
-// ── Alokacja ──────────────────────────────────────────────────────────────────
-/// Alokuj ciągły framebuffer.
-/// UWAGA: mm_alloc() nie gwarantuje ciągłości fizycznej.
-/// Na prawdziwym sprzęcie użyj contiguous allocator lub zarezerwuj
-/// obszar w Multiboot2 memory map przed inicjalizacją PMM.
+// ── Allocation ────────────────────────────────────────────────────────────────
+
+/// Allocate a contiguous framebuffer in the kernel address space.
+///
+/// NOTE: mm_alloc() does not guarantee physical contiguity.
+/// On real hardware use a contiguous allocator or reserve a region in
+/// the Multiboot2 memory map before PMM initialisation.
 pub unsafe fn fb_alloc() -> bool {
-    // Wirtualna baza: 2GB (nie koliduje z kernelem @ 0x101000 ani stosami)
+    // Virtual base: 2 GB — does not collide with the kernel @ 0x101000 or stacks.
     let vbase = 0x8000_0000u64;
+
     let first_phys = mm_alloc();
     core::ptr::write_bytes(first_phys as *mut u8, 0, PAGE_SIZE);
     vmap(K_P4, vbase, first_phys, PTE_W);
@@ -43,14 +53,23 @@ pub unsafe fn fb_alloc() -> bool {
         vmap(K_P4, vbase + i as u64 * PAGE_SIZE as u64, phys, PTE_W);
     }
 
-    FB_VIRT = vbase as *mut u32;
-    serial_print("[FB] phys="); serial_hex(FB_PHYS);
-    unsafe { serial_print(" pages="); let mut b=[0u8;24]; serial_print(num_str(FB_PAGES,&mut b)); }
+    FB_VIRT      = vbase as *mut u32;
+    FB_WIDTH     = FB_W as u32;
+    FB_HEIGHT    = FB_H as u32;
+    FB_PITCH_RT  = FB_PITCH as u32;
+    // FB_BPP_RT stays 32
+
+    serial_print("[FB] phys=");
+    serial_hex(FB_PHYS);
+    serial_print(" pages=");
+    { let mut b = [0u8; 24]; serial_print(num_str(FB_PAGES, &mut b)); }
     serial_print("\n");
+
     FB_PHYS != 0
 }
 
-// ── Podstawowe operacje ───────────────────────────────────────────────────────
+// ── Basic pixel operations ────────────────────────────────────────────────────
+
 #[inline]
 pub unsafe fn fb_ptr() -> Option<*mut u32> {
     if FB_VIRT.is_null() { None } else { Some(FB_VIRT) }
@@ -65,7 +84,9 @@ pub unsafe fn fb_pixel(x: usize, y: usize, color: u32) {
 
 pub unsafe fn fb_fill(color: u32) {
     if FB_VIRT.is_null() { return; }
-    for i in 0..(FB_W * FB_H) { *FB_VIRT.add(i) = color; }
+    for i in 0..(FB_W * FB_H) {
+        *FB_VIRT.add(i) = color;
+    }
 }
 
 pub unsafe fn fb_rect(x: usize, y: usize, w: usize, h: usize, color: u32) {
@@ -89,39 +110,41 @@ pub unsafe fn fb_blit(src: *const u32, sw: usize, sh: usize, dx: usize, dy: usiz
     }
 }
 
-// ── Software tryb tekstowy ────────────────────────────────────────────────────
-// Emulacja 80×25 na FB. Każdy "znak" to 24×24 piksele (1920/80 = 24px, 1080/25 ≈ 43px)
-// Używamy własnej bitmapowej czcionki 8×16 (skalowanej ×3 w X, ×2.5 w Y)
+// ── Software text mode ────────────────────────────────────────────────────────
+// Emulates 80×25 on the framebuffer.
+// Each "cell" is 24×43 pixels  (1920 / 80 = 24 px wide, 1080 / 25 ≈ 43 px tall).
+// The 8×16 bitmap font is scaled ×3 horizontally and ×2.69 vertically.
 
-pub const COLS: usize = 80;
-pub const ROWS: usize = 25;
+pub const COLS:   usize = 80;
+pub const ROWS:   usize = 25;
 pub const CELL_W: usize = 24;  // FB_W / COLS
-pub const CELL_H: usize = 43;  // FB_H / ROWS (≈43, zaokrąglamy)
+pub const CELL_H: usize = 43;  // FB_H / ROWS (≈43, rounded)
 
-// Kursor tekstowy
-pub static mut TX: usize = 0;
-pub static mut TY: usize = 0;
-pub static mut TFG: u32  = 0xFF_FFFFFF; // biały
-pub static mut TBG: u32  = 0xFF_000000; // czarny
+// Text cursor and colour state
+pub static mut TX:  usize = 0;
+pub static mut TY:  usize = 0;
+pub static mut TFG: u32   = 0xFF_FFFFFF; // white
+pub static mut TBG: u32   = 0xFF_000000; // black
 
-// Minimalna czcionka 8×16 — tylko ASCII 0x20–0x7E
-// Każdy bajt = 1 wiersz pikseli (bit7=lewy)
-// Źródło: IBM PC VGA ROM font (public domain)
+// Minimal 8×16 bitmap font — ASCII 0x20 – 0x7E.
+// Each byte = one pixel row (bit 7 = leftmost pixel).
+// Source: IBM PC VGA ROM font (public domain).
 static FONT8X16: [[u8; 16]; 95] = include_font();
 
-const fn include_font() -> [[u8;16]; 95] {
-    // Wbudowana minimalna czcionka (uproszczona — tylko litery, cyfry, znaki)
-    // Kolejność: ASCII 0x20 (spacja) .. 0x7E (~)
-    let mut f = [[0u8;16]; 95];
-    // Spacja (0x20)
-    // (wszystkie 0)
+const fn include_font() -> [[u8; 16]; 95] {
+    // Built-in minimal font (simplified — letters, digits, punctuation).
+    // Order: ASCII 0x20 (space) .. 0x7E (~).
+    let mut f = [[0u8; 16]; 95];
+
+    // Space (0x20) — all zeros, already initialised.
 
     // '!' (0x21)
     f[1]  = [0x00,0x18,0x18,0x18,0x18,0x18,0x18,0x00,0x18,0x18,0x00,0x00,0x00,0x00,0x00,0x00];
-    // '#'
+    // '#' (0x23)
     f[3]  = [0x00,0x6C,0x6C,0xFE,0x6C,0x6C,0xFE,0x6C,0x6C,0x00,0x00,0x00,0x00,0x00,0x00,0x00];
-    // '0'
-    f[16] = [0x00,0x38,0x6C,0xC6,0xC6,0xD6,0xD6,0xC6,0xC6,0x6C,0x38,0x00,0x00,0x00,0x00,0x00];
+
+    // Digits 0-9 (0x30-0x39)
+    f[16] = [0x00,0x38,0x6C,0xC6,0xC6,0xD6,0xD6,0xC6,0xC6,0x6C,0x38,0x00,0x00,0x00,0x00,0x00]; // '0'
     f[17] = [0x00,0x18,0x38,0x78,0x18,0x18,0x18,0x18,0x18,0x18,0x7E,0x00,0x00,0x00,0x00,0x00]; // '1'
     f[18] = [0x00,0x7C,0xC6,0x06,0x0C,0x18,0x30,0x60,0xC0,0xC6,0xFE,0x00,0x00,0x00,0x00,0x00]; // '2'
     f[19] = [0x00,0x7C,0xC6,0x06,0x06,0x3C,0x06,0x06,0x06,0xC6,0x7C,0x00,0x00,0x00,0x00,0x00]; // '3'
@@ -131,7 +154,8 @@ const fn include_font() -> [[u8;16]; 95] {
     f[23] = [0x00,0xFE,0xC6,0x06,0x06,0x0C,0x18,0x30,0x30,0x30,0x30,0x00,0x00,0x00,0x00,0x00]; // '7'
     f[24] = [0x00,0x7C,0xC6,0xC6,0xC6,0x7C,0xC6,0xC6,0xC6,0xC6,0x7C,0x00,0x00,0x00,0x00,0x00]; // '8'
     f[25] = [0x00,0x7C,0xC6,0xC6,0xC6,0x7E,0x06,0x06,0x06,0x0C,0x78,0x00,0x00,0x00,0x00,0x00]; // '9'
-    // Wielkie litery A-Z (0x41 = idx 33)
+
+    // Uppercase A-Z (0x41 = index 33)
     f[33] = [0x00,0x10,0x38,0x6C,0xC6,0xC6,0xFE,0xC6,0xC6,0xC6,0xC6,0x00,0x00,0x00,0x00,0x00]; // A
     f[34] = [0x00,0xFC,0x66,0x66,0x66,0x7C,0x66,0x66,0x66,0x66,0xFC,0x00,0x00,0x00,0x00,0x00]; // B
     f[35] = [0x00,0x3C,0x66,0xC2,0xC0,0xC0,0xC0,0xC0,0xC2,0x66,0x3C,0x00,0x00,0x00,0x00,0x00]; // C
@@ -158,7 +182,8 @@ const fn include_font() -> [[u8;16]; 95] {
     f[56] = [0x00,0xC6,0xC6,0x6C,0x6C,0x38,0x38,0x6C,0x6C,0xC6,0xC6,0x00,0x00,0x00,0x00,0x00]; // X
     f[57] = [0x00,0x66,0x66,0x66,0x66,0x3C,0x18,0x18,0x18,0x18,0x3C,0x00,0x00,0x00,0x00,0x00]; // Y
     f[58] = [0x00,0xFE,0xC6,0x86,0x0C,0x18,0x30,0x60,0xC2,0xC6,0xFE,0x00,0x00,0x00,0x00,0x00]; // Z
-    // Małe litery a-z (0x61 = idx 65)
+
+    // Lowercase a-z (0x61 = index 65)
     f[65] = [0x00,0x00,0x00,0x00,0x78,0x0C,0x7C,0xCC,0xCC,0xCC,0x76,0x00,0x00,0x00,0x00,0x00]; // a
     f[66] = [0x00,0xE0,0x60,0x60,0x7C,0x66,0x66,0x66,0x66,0x66,0xDC,0x00,0x00,0x00,0x00,0x00]; // b
     f[67] = [0x00,0x00,0x00,0x00,0x7C,0xC6,0xC0,0xC0,0xC0,0xC6,0x7C,0x00,0x00,0x00,0x00,0x00]; // c
@@ -185,12 +210,15 @@ const fn include_font() -> [[u8;16]; 95] {
     f[88] = [0x00,0x00,0x00,0x00,0xC6,0x6C,0x38,0x38,0x38,0x6C,0xC6,0x00,0x00,0x00,0x00,0x00]; // x
     f[89] = [0x00,0x00,0x00,0x00,0x66,0x66,0x66,0x66,0x66,0x3C,0x0C,0x18,0xF0,0x00,0x00,0x00]; // y
     f[90] = [0x00,0x00,0x00,0x00,0xFE,0xCC,0x18,0x30,0x60,0xC6,0xFE,0x00,0x00,0x00,0x00,0x00]; // z
+
     f
 }
 
-// ── Rysowanie znaku na FB ─────────────────────────────────────────────────────
+// ── Character rendering ───────────────────────────────────────────────────────
+
 unsafe fn fb_draw_char(c: char, cx: usize, cy: usize, fg: u32, bg: u32) {
     if FB_VIRT.is_null() { return; }
+
     let px = cx * CELL_W;
     let py = cy * CELL_H;
 
@@ -199,21 +227,21 @@ unsafe fn fb_draw_char(c: char, cx: usize, cy: usize, fg: u32, bg: u32) {
         if code >= 0x20 && code <= 0x7E {
             &FONT8X16[code - 0x20]
         } else {
-            &FONT8X16[0] // spacja dla nieznanych
+            &FONT8X16[0] // space for unknown glyphs
         }
     };
 
     for row in 0..16usize {
         let bits = glyph[row];
-        // Skaluj wertykalnie: 16 wierszy fontu → CELL_H pikseli (≈2.69×)
+        // Scale vertically: 16 font rows → CELL_H pixels (≈2.69×)
         let y_start = row * CELL_H / 16;
         let y_end   = (row + 1) * CELL_H / 16;
         for sy in y_start..y_end {
             let fy = py + sy; if fy >= FB_H { break; }
             for col in 0..8usize {
-                let bit = (bits >> (7 - col)) & 1;
+                let bit   = (bits >> (7 - col)) & 1;
                 let color = if bit != 0 { fg } else { bg };
-                // Skaluj horyzontalnie: 8 pikseli fontu → CELL_W (=24, 3× scale)
+                // Scale horizontally: 8 font pixels → CELL_W (24 px = 3× scale)
                 let x0 = col * CELL_W / 8;
                 let x1 = (col + 1) * CELL_W / 8;
                 for sx in x0..x1 {
@@ -225,33 +253,39 @@ unsafe fn fb_draw_char(c: char, cx: usize, cy: usize, fg: u32, bg: u32) {
     }
 }
 
-// ── Scroll ────────────────────────────────────────────────────────────────────
+// ── Scrolling ─────────────────────────────────────────────────────────────────
+
 unsafe fn fb_scroll_up() {
     if FB_VIRT.is_null() { return; }
-    let row_px = CELL_H * FB_W; // piksele na wiersz tekstowy
-    // Przesuń cały bufor w górę o CELL_H pikseli
+
+    let row_px = CELL_H * FB_W; // pixels per text row
     let total  = FB_W * (FB_H - CELL_H);
-    core::ptr::copy(
-        FB_VIRT.add(row_px),
-        FB_VIRT,
-        total,
-    );
-    // Wyczyść ostatni wiersz
+
+    // Shift the entire buffer up by one text row
+    core::ptr::copy(FB_VIRT.add(row_px), FB_VIRT, total);
+
+    // Clear the last row
     let last_start = FB_W * (FB_H - CELL_H);
     for i in last_start..(FB_W * FB_H) {
         *FB_VIRT.add(i) = TBG;
     }
 }
 
-// ── Publiczny interfejs tekstowy ──────────────────────────────────────────────
-/// Wypisz znak w trybie tekstowym (zastępuje VGA putc gdy FB aktywny)
+// ── Public text-mode interface ────────────────────────────────────────────────
+
+/// Write one character in text mode (replaces VGA putc when the FB is active).
 pub unsafe fn fb_putc(c: char) {
     if FB_VIRT.is_null() { return; }
     match c {
-        '\n' => { TX = 0; TY += 1; }
-        '\r' => { TX = 0; }
-        '\t' => { TX = (TX + 8) & !7; }
-        '\x08' => { if TX > 0 { TX -= 1; fb_draw_char(' ', TX, TY, TFG, TBG); } }
+        '\n'   => { TX = 0; TY += 1; }
+        '\r'   => { TX = 0; }
+        '\t'   => { TX = (TX + 8) & !7; }
+        '\x08' => {
+            if TX > 0 {
+                TX -= 1;
+                fb_draw_char(' ', TX, TY, TFG, TBG);
+            }
+        }
         c => {
             fb_draw_char(c, TX, TY, TFG, TBG);
             TX += 1;
@@ -262,7 +296,9 @@ pub unsafe fn fb_putc(c: char) {
 }
 
 pub unsafe fn fb_set_color(fg: u32, bg: u32) { TFG = fg; TBG = bg; }
+
 pub unsafe fn fb_cls() {
     fb_fill(TBG);
-    TX = 0; TY = 0;
+    TX = 0;
+    TY = 0;
 }

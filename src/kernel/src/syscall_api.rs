@@ -145,7 +145,7 @@ pub unsafe fn syscall_dispatch_v2(tf: *mut crate::perm::TF) {
 unsafe fn sys_get_fb_info(tf: *mut crate::perm::TF) -> i64 {
     use crate::threading::{THREADS, CUR};
     use crate::mm::{valid_buf, vmap, PAGE_SIZE, PTE_W, PTE_U};
-    use crate::display::fb::{FB_PHYS, FB_WIDTH, FB_HEIGHT, FB_PITCH, FB_BPP};
+    use crate::display::fb::{FB_PHYS, FB_WIDTH, FB_HEIGHT, FB_PITCH_RT, FB_BPP_RT};
     use core::sync::atomic::Ordering;
     use core::mem::size_of;
 
@@ -158,8 +158,8 @@ unsafe fn sys_get_fb_info(tf: *mut crate::perm::TF) -> i64 {
     let phys   = FB_PHYS;
     let width  = FB_WIDTH;
     let height = FB_HEIGHT;
-    let pitch  = FB_PITCH;
-    let bpp    = FB_BPP;
+    let pitch  = FB_PITCH_RT;   // u32 runtime value, not the usize compile-time const
+    let bpp    = FB_BPP_RT;     // always 32
 
     if phys == 0 || width == 0 || height == 0 { return err::INVAL; }
 
@@ -183,8 +183,8 @@ unsafe fn sys_get_fb_info(tf: *mut crate::perm::TF) -> i64 {
     info.phys_addr = phys;
     info.width     = width;
     info.height    = height;
-    info.pitch     = pitch;
-    info.bpp       = bpp;
+    info.pitch     = pitch;  // already u32
+    info.bpp       = bpp;    // already u32
     info.size      = fb_bytes;
 
     err::OK

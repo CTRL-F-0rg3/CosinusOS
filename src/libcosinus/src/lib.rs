@@ -22,6 +22,7 @@ pub mod nr {
     pub const THREAD_ID:   u64 = 11;
     pub const TIME:        u64 = 12;
     pub const DEBUG_PRINT: u64 = 13;
+    pub const GET_FB_INFO: u64 = 14;  // query framebuffer + map into userspace
 }
 
 // ── Error codes (must match kernel syscall_api.rs) ────────────────────────────
@@ -38,7 +39,10 @@ pub mod err {
 
 pub type CosResult<T> = Result<T, i64>;
 
-/// raw pointer to the 32-bpp pixel buffer.
+// ── Framebuffer descriptor ────────────────────────────────────────────────────
+
+/// Filled by the GET_FB_INFO syscall.
+/// After a successful call, `virt_addr` points to the linear 32-bpp pixel buffer.
 #[repr(C)]
 pub struct FbInfo {
     /// Virtual address at which the FB is mapped in this process.
@@ -51,13 +55,12 @@ pub struct FbInfo {
     pub height:    u32,
     /// Bytes per scan line.
     pub pitch:     u32,
-    /// Bits per pixel (always 32).
+    /// Bits per pixel (always 32 = BGRX).
     pub bpp:       u32,
     /// Total framebuffer size in bytes.
     pub size:      u64,
 }
 
- 
 impl FbInfo {
     pub const fn zeroed() -> Self {
         Self {
@@ -65,7 +68,7 @@ impl FbInfo {
             width: 0, height: 0, pitch: 0, bpp: 0, size: 0,
         }
     }
- 
+
     /// Return a mutable pixel slice over the entire framebuffer.
     /// Each element is a 32-bit BGRX pixel (blue in low byte).
     ///
@@ -77,7 +80,7 @@ impl FbInfo {
             (self.pitch / 4) as usize * self.height as usize,
         )
     }
- 
+
     /// Write one pixel at (x, y). Clips silently if out of bounds.
     #[inline]
     pub unsafe fn put_pixel(&self, x: u32, y: u32, rgb: u32) {
@@ -85,7 +88,7 @@ impl FbInfo {
         let off = y as usize * (self.pitch / 4) as usize + x as usize;
         *((self.virt_addr as *mut u32).add(off)) = rgb;
     }
- 
+
     /// Fill a rectangle with a solid colour.
     pub unsafe fn fill_rect(&self, x: u32, y: u32, w: u32, h: u32, rgb: u32) {
         let x2 = (x + w).min(self.width);
@@ -100,6 +103,9 @@ impl FbInfo {
     }
 }
 
+// ── Syscall wrapper ───────────────────────────────────────────────────────────
+
+/// Query the kernel for framebuffer info and map the FB into this process.
 pub fn get_fb_info(info: &mut FbInfo) -> CosResult<()> {
     unsafe {
         ok(syscall1(nr::GET_FB_INFO, info as *mut FbInfo as u64)).map(|_| ())
@@ -163,27 +169,19 @@ pub unsafe fn syscall3(n: u64, a1: u64, a2: u64, a3: u64) -> i64 {
 }
 
 // ── Process ───────────────────────────────────────────────────────────────────
+
 pub fn exit(code: i32) -> ! {
     unsafe { syscall1(nr::EXIT, code as u64); }
     loop { unsafe { core::arch::asm!("hlt", options(nostack, nomem)); } }
 }
 
-pub fn sched_yield() {
-    unsafe { syscall0(nr::YIELD); }
-}
-
-pub fn sleep(ticks: u64) {
-    unsafe { syscall1(nr::SLEEP, ticks); }
-}
-
-pub fn thread_id() -> u32 {
-    unsafe { syscall1(nr::THREAD_ID, 0) as u32 }
-}
+pub fn sched_yield() { unsafe { syscall0(nr::YIELD); } }
+pub fn sleep(ticks: u64) { unsafe { syscall1(nr::SLEEP, ticks); } }
+pub fn thread_id() -> u32 { unsafe { syscall1(nr::THREAD_ID, 0) as u32 } }
 
 // ── I/O ───────────────────────────────────────────────────────────────────────
 
-// Write bytes to fd 1 (stdout) or fd 2 (stderr).
-// Kernel validates the pointer via valid_buf before reading it.
+/// Write bytes to fd 1 (stdout) or fd 2 (stderr).
 pub fn write(fd: u64, s: &str) -> CosResult<usize> {
     unsafe {
         ok(syscall3(nr::WRITE, fd, s.as_ptr() as u64, s.len() as u64))
@@ -196,14 +194,13 @@ pub fn println(s: &str)  { let _ = write(1, s); let _ = write(1, "\n"); }
 pub fn eprint(s: &str)   { let _ = write(2, s); }
 pub fn eprintln(s: &str) { let _ = write(2, s); let _ = write(2, "\n"); }
 
-// Send a string to kernel serial output (bypasses VGA, always visible).
-// Kernel prefixes with "[US] " automatically.
+/// Send a string to kernel serial output (bypasses VGA, always visible).
 pub fn debug(s: &str) {
     unsafe { syscall3(nr::DEBUG_PRINT, 0, s.as_ptr() as u64, s.len() as u64); }
 }
 
-// Read up to `buf.len()` bytes from stdin (fd 0).
-// Returns err::AGAIN if no input is available yet.
+/// Read up to `buf.len()` bytes from stdin (fd 0).
+/// Returns err::AGAIN if no input is available yet.
 pub fn read(buf: &mut [u8]) -> CosResult<usize> {
     unsafe {
         ok(syscall3(nr::READ, 0, buf.as_mut_ptr() as u64, buf.len() as u64))
@@ -211,7 +208,7 @@ pub fn read(buf: &mut [u8]) -> CosResult<usize> {
     }
 }
 
-// Blocking readline — yields until a newline or buffer full.
+/// Blocking readline — yields until a newline or buffer full.
 pub fn read_line(buf: &mut [u8]) -> usize {
     let mut total = 0usize;
     loop {
@@ -230,14 +227,13 @@ pub fn read_line(buf: &mut [u8]) -> usize {
 
 // ── Memory ────────────────────────────────────────────────────────────────────
 
-// Allocate `pages` contiguous pages at a kernel-chosen address.
-// Returns a pointer to the mapped region, or null on failure.
-// Hint 0 lets the kernel pick the address (starts at 0x10000000).
+/// Allocate `pages` pages at a kernel-chosen address (hint = 0).
 pub fn mem_alloc(pages: usize) -> *mut u8 {
     let r = unsafe { syscall2(nr::MEM_ALLOC, pages as u64, 0) };
     if r < 0 { core::ptr::null_mut() } else { r as *mut u8 }
 }
 
+/// Allocate `pages` pages at a specific virtual address hint.
 pub fn mem_alloc_at(pages: usize, hint: u64) -> *mut u8 {
     let r = unsafe { syscall2(nr::MEM_ALLOC, pages as u64, hint) };
     if r < 0 { core::ptr::null_mut() } else { r as *mut u8 }
@@ -248,6 +244,7 @@ pub fn mem_free(ptr: *mut u8, pages: usize) -> CosResult<()> {
 }
 
 // ── Spawn ─────────────────────────────────────────────────────────────────────
+
 #[repr(C)]
 pub struct SpawnArgs {
     pub entry:    u64,
@@ -266,7 +263,6 @@ pub fn spawn(args: &SpawnArgs) -> CosResult<u32> {
     unsafe { ok(syscall1(nr::SPAWN, args as *const SpawnArgs as u64)).map(|t| t as u32) }
 }
 
-// Convenience: spawn a named user thread.
 pub fn spawn_thread(entry: unsafe extern "C" fn(u64) -> !, name: &[u8; 16], arg: u64) -> CosResult<u32> {
     spawn(&SpawnArgs {
         entry: entry as u64,
@@ -278,6 +274,7 @@ pub fn spawn_thread(entry: unsafe extern "C" fn(u64) -> !, name: &[u8; 16], arg:
 }
 
 // ── IPC ───────────────────────────────────────────────────────────────────────
+
 #[repr(C)]
 pub struct IpcMsg {
     pub from:  u32, pub to:   u32,
@@ -310,18 +307,19 @@ pub fn ipc_poll() -> usize {
 }
 
 // ── Time ──────────────────────────────────────────────────────────────────────
+
 #[repr(C)]
 pub struct TimeInfo { pub ticks: u64, pub uptime: u64 }
 
-pub fn ticks() -> u64 {
-    unsafe { syscall0(nr::TIME) as u64 }
-}
+pub fn ticks() -> u64 { unsafe { syscall0(nr::TIME) as u64 } }
 
 // ── Thread info ───────────────────────────────────────────────────────────────
+
 #[repr(C)]
 pub struct ThreadInfo { pub tid: u32, pub prio: u8, pub _pad: [u8; 3] }
 
-// ── fmt::Write bridge for print! style macros ─────────────────────────────────
+// ── fmt::Write bridge ─────────────────────────────────────────────────────────
+
 pub struct Stdout;
 pub struct Stderr;
 pub struct Serial;
@@ -355,10 +353,9 @@ impl core::fmt::Write for Serial {
 }
 
 // ── Panic handler ─────────────────────────────────────────────────────────────
+
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
-    // Best-effort: try to print location, then exit.
-    // Can't allocate here so use a fixed stack buffer.
     let mut buf = [0u8; 256];
     let mut pos = 0usize;
 
@@ -375,7 +372,6 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
         push(&mut buf, &mut pos, " ");
         push(&mut buf, &mut pos, loc.file());
         push(&mut buf, &mut pos, ":");
-        // Encode line number manually (no alloc)
         let line = loc.line();
         let mut tmp = [0u8; 10];
         let mut i = 10usize;
@@ -394,6 +390,5 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
     if let Ok(s) = core::str::from_utf8(&buf[..pos]) {
         eprint(s);
     }
-
     exit(101)
 }
