@@ -997,6 +997,7 @@ pub unsafe fn ohci_poll_all() {
             }
         }
 
+        //.
         // Restart TD
         let buf   = o.ports[pi].buf;
         let mps   = o.ports[pi].ep_mps;
@@ -1017,6 +1018,7 @@ pub unsafe fn ohci_poll_all() {
         o.ports[pi].td_intr = new_td as u64;
     }
 }
+//p
 
 pub unsafe fn ohci_hotplug() {
     let o = match &mut OHCI { Some(x)=>x, None=>return };
