@@ -13,7 +13,7 @@
   <a href="#"><img src="https://img.shields.io/badge/architecture-x86__64-orange" alt="Architecture"></a>
   <a href="#"><img src="https://img.shields.io/badge/built%20with-Zig-f69a1b" alt="Built with Zig"></a>
 </p>
-
+CosinusOS is a from-scratch operating system, not based on Linux or any existing kernel
 ---
 
 ##  About
@@ -25,6 +25,11 @@ The system prioritizes desktop usability while maintaining tight integration wit
 >  **Early Beta Status**  
 > Cosinus OS is currently in an early beta phase (`v0.3.x` → `v0.4.x` transitional mapping). It is fully bootable and functional, but still under active development. Recommended for testing, experimentation, and early adoption.
 
+## Clarification
+CosinusOS is NOT:
+- a Linux distribution
+- based on the Linux kernel
+- a fork of any existing OS
 ---
 
 ##  Core Pillars
