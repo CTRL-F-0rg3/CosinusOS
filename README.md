@@ -37,8 +37,7 @@ CosinusOS is NOT:
 ###  Microkernel Architecture
 Designed from scratch with security and isolation in mind. Every system component runs in user space, services are optional, and failures are strictly contained.
 
-###  Linux Compatibility Layer
-A native compatibility layer enabling execution of Linux ELF binaries and applications on Cosinus OS. Designed to bridge the software ecosystem gap while preserving system integrity.
+###  Independent Linux Binary Compatibility Layer (not based on Linux kernel)
 
 ###  Security-First Design
 Protection is not an afterthought. Security is baked into the kernel, memory management, and service isolation from day one.
